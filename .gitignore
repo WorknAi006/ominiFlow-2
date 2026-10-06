@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+
+venv/
+__pycache__/
+*.pyc
+
+.next/
+node_modules/
+
+.pytest_cache/
+.coverage
+# Locally stored customer media (never commit)
+backend/var/

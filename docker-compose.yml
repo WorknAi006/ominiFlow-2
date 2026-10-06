@@ -1,0 +1,44 @@
+services:
+
+  postgres:
+    image: postgres:16
+    container_name: omniflow-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: omniflow
+      POSTGRES_USER: omniflow
+      POSTGRES_PASSWORD: omniflow_local_dev_password
+
+    ports:
+      - "5433:5432"
+
+    volumes:
+      - omniflow_postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omniflow -d omniflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+
+  redis:
+    image: redis:7-alpine
+    container_name: omniflow-redis
+    restart: unless-stopped
+
+    ports:
+      - "6379:6379"
+
+    volumes:
+      - omniflow_redis_data:/data
+
+    command: redis-server --appendonly yes
+
+
+volumes:
+
+  omniflow_postgres_data:
+
+  omniflow_redis_data:

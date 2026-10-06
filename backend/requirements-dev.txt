@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Test runner. httpx is a runtime dependency because the Meta client uses it.
+pytest==9.1.1
