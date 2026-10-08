@@ -1,18 +1,11 @@
 /**
- * Minimal realtime inbox client (message.created, message.status_changed,
- * conversation.updated).
+ * Inbox realtime event types and clients for message.created,
+ * message.status_changed, and conversation.updated.
  *
- * Protocol with /api/v1/ws/inbox:
- *  1. open the socket
- *  2. send {"type": "auth", "token": <access token>} (never in the URL)
- *  3. server replies {"event": "ready"}, then streams message.created
- *
- * The tenant is decided by the server from the token; nothing tenant- or
- * role-related is sent by the client. Reconnects use exponential backoff
- * with jitter and fetch a fresh token each time (tokens are short-lived
- * and the server closes the socket when they expire).
+ * The backend WebSocket expects a first-frame JWT. The Inbox uses a
+ * same-origin server bridge to keep that token in the HttpOnly cookie and
+ * relay the existing event payloads over an EventSource connection.
  */
-import { API_BASE_URL } from "@/lib/api/client";
 
 export type InboxConnectionState =
   | "connecting"
@@ -148,46 +141,27 @@ export function parseRealtimeEvent(raw: unknown): InboxEvent | null {
   return null;
 }
 
-export interface InboxRealtimeOptions {
-  /** Returns the current access token (called on every (re)connect). */
-  getToken: () => string | Promise<string>;
-  /** Defaults to API_BASE_URL with ws(s):// and /api/v1/ws/inbox. */
+export interface InboxEventStreamOptions {
   url?: string;
   onStateChange?: (state: InboxConnectionState) => void;
+  onAuthError?: (code: number) => void;
   initialBackoffMs?: number;
   maxBackoffMs?: number;
-  /** For tests: create the socket (defaults to the global WebSocket). */
-  webSocketFactory?: (url: string) => WebSocket;
+  eventSourceFactory?: (url: string) => EventSource;
 }
 
-type MessageCreatedHandler = (event: MessageCreatedEvent) => void;
-type MessageStatusChangedHandler = (event: MessageStatusChangedEvent) => void;
-type ConversationUpdatedHandler = (event: ConversationUpdatedEvent) => void;
-
-/** Server close code: authenticated but not allowed. Retrying won't help. */
-const CLOSE_FORBIDDEN = 4403;
-
-function defaultUrl(): string {
-  const url = new URL("/api/v1/ws/inbox", API_BASE_URL);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  return url.toString();
-}
-
-export class InboxRealtimeClient {
-  private socket: WebSocket | null = null;
-  private handlers = new Set<MessageCreatedHandler>();
-  private statusHandlers = new Set<MessageStatusChangedHandler>();
-  private conversationHandlers = new Set<ConversationUpdatedHandler>();
-  private attempts = 0;
+export class InboxEventStreamClient {
+  private source: EventSource | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private attempts = 0;
   private stopped = true;
   private currentState: InboxConnectionState = "disconnected";
+  private eventIds = new Set<string>();
+  private eventHandlers = new Set<(event: Exclude<InboxEvent, { event: "ready" }>) => void>();
 
-  constructor(private readonly options: InboxRealtimeOptions) {}
+  constructor(private readonly options: InboxEventStreamOptions = {}) {}
 
-  get state(): InboxConnectionState {
-    return this.currentState;
-  }
+  get state(): InboxConnectionState { return this.currentState; }
 
   connect(): void {
     if (!this.stopped) return;
@@ -199,98 +173,83 @@ export class InboxRealtimeClient {
   disconnect(): void {
     this.stopped = true;
     this.clearRetry();
-    this.socket?.close(1000);
-    this.socket = null;
+    this.source?.close();
+    this.source = null;
     this.setState("disconnected");
   }
 
-  /** Reconnect now (e.g. after login or a token refresh), resetting backoff. */
   reconnect(): void {
     this.stopped = false;
     this.attempts = 0;
     this.clearRetry();
-    const previous = this.socket;
-    this.socket = null;
-    previous?.close(1000);
+    this.source?.close();
+    this.source = null;
     this.open();
   }
 
-  /** Subscribe to message.created. Returns an unsubscribe function. */
-  onMessageCreated(handler: MessageCreatedHandler): () => void {
-    this.handlers.add(handler);
-    return () => this.handlers.delete(handler);
-  }
-
-  /** Subscribe to message.status_changed. Returns an unsubscribe function. */
-  onMessageStatusChanged(handler: MessageStatusChangedHandler): () => void {
-    this.statusHandlers.add(handler);
-    return () => this.statusHandlers.delete(handler);
-  }
-
-  /** Subscribe to conversation.updated. Returns an unsubscribe function. */
-  onConversationUpdated(handler: ConversationUpdatedHandler): () => void {
-    this.conversationHandlers.add(handler);
-    return () => this.conversationHandlers.delete(handler);
+  onEvent(handler: (event: Exclude<InboxEvent, { event: "ready" }>) => void): () => void {
+    this.eventHandlers.add(handler);
+    return () => this.eventHandlers.delete(handler);
   }
 
   private open(): void {
     this.setState(this.attempts === 0 ? "connecting" : "reconnecting");
+    let source: EventSource;
+    try {
+      source = this.options.eventSourceFactory
+        ? this.options.eventSourceFactory(this.options.url ?? "/api/realtime/inbox")
+        : new EventSource(this.options.url ?? "/api/realtime/inbox");
+    } catch {
+      this.scheduleReconnect();
+      return;
+    }
+    this.source = source;
 
-    const url = this.options.url ?? defaultUrl();
-    const socket = this.options.webSocketFactory
-      ? this.options.webSocketFactory(url)
-      : new WebSocket(url);
-    this.socket = socket;
-
-    socket.onopen = async () => {
+    source.onopen = () => {
+      if (this.source !== source) return;
+      this.attempts = 0;
+      this.setState("connected");
+    };
+    source.onmessage = (message: MessageEvent<string>) => {
+      if (this.source !== source) return;
+      const event = parseRealtimeEvent(message.data);
+      if (!event || event.event === "ready") return;
+      if (event.event_id && this.eventIds.has(event.event_id)) return;
+      if (event.event_id) {
+        this.eventIds.add(event.event_id);
+        if (this.eventIds.size > 500) this.eventIds.delete(this.eventIds.values().next().value!);
+      }
+      this.eventHandlers.forEach((handler) => handler(event));
+    };
+    source.addEventListener("auth_error", (rawEvent) => {
+      if (this.source !== source) return;
+      const message = rawEvent as MessageEvent<string>;
+      let code = 4401;
       try {
-        const token = await this.options.getToken();
-        if (this.socket === socket) {
-          socket.send(JSON.stringify({ type: "auth", token }));
-        }
-      } catch {
-        socket.close(4000);
-      }
-    };
-
-    socket.onmessage = (message: MessageEvent) => {
-      const event = parseRealtimeEvent(String(message.data));
-      if (event === null) return;
-
-      if (event.event === "ready") {
-        this.attempts = 0;
-        this.setState("connected");
-      } else if (event.event === "message.created") {
-        console.log("Realtime message received", event);
-        this.handlers.forEach((handler) => handler(event));
-      } else if (event.event === "message.status_changed") {
-        console.log("Realtime message status changed", event);
-        this.statusHandlers.forEach((handler) => handler(event));
-      } else if (event.event === "conversation.updated") {
-        console.log("Realtime conversation updated", event);
-        this.conversationHandlers.forEach((handler) => handler(event));
-      }
-    };
-
-    socket.onclose = (closeEvent: CloseEvent) => {
-      if (this.socket !== socket) return; // superseded by reconnect()
-      this.socket = null;
-
-      if (this.stopped || closeEvent.code === CLOSE_FORBIDDEN) {
-        this.stopped = true;
-        this.setState("disconnected");
-        return;
-      }
+        const payload: unknown = JSON.parse(message.data);
+        if (isRecord(payload) && (payload.code === 4401 || payload.code === 4403)) code = payload.code;
+      } catch { /* Keep the unauthenticated fallback. */ }
+      this.stopped = true;
+      source.close();
+      this.source = null;
+      this.clearRetry();
+      this.setState("disconnected");
+      this.options.onAuthError?.(code);
+    });
+    source.onerror = () => {
+      if (this.source !== source || this.stopped) return;
+      source.close();
+      this.source = null;
       this.scheduleReconnect();
     };
   }
 
   private scheduleReconnect(): void {
+    if (this.stopped) return;
     const initial = this.options.initialBackoffMs ?? 1_000;
     const max = this.options.maxBackoffMs ?? 30_000;
     const base = Math.min(max, initial * 2 ** this.attempts);
     const delay = base + Math.random() * base * 0.3;
-
     this.attempts += 1;
     this.setState("reconnecting");
     this.clearRetry();
@@ -314,6 +273,6 @@ export class InboxRealtimeClient {
   }
 }
 
-export function createInboxRealtime(options: InboxRealtimeOptions): InboxRealtimeClient {
-  return new InboxRealtimeClient(options);
+export function createInboxEventStream(options: InboxEventStreamOptions = {}): InboxEventStreamClient {
+  return new InboxEventStreamClient(options);
 }

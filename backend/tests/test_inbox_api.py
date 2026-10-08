@@ -405,3 +405,60 @@ class MessageApiTests(InboxTestCase):
         self.assertEqual(self.client.get("/api/v1/messages/not-a-uuid", headers=headers).status_code, 422)
         self.assertEqual(self.client.get(f"/api/v1/messages/{uuid.uuid4()}", headers=headers).status_code, 404)
         self.assertEqual(self.client.get(f"/api/v1/messages/{self.messages[0].id}").status_code, 401)
+
+
+class OutboundIdempotencyApiTests(InboxTestCase):
+
+    @classmethod
+    def create_fixtures(cls) -> None:
+        super().create_fixtures()
+        contact = cls.make_contact(cls.tenant_a, "+14155550101", first_name="Send Test")
+        cls.conversation = cls.make_conversation(cls.tenant_a, contact, cls.wa_a)
+        cls.db.commit()
+
+    def test_duplicate_send_returns_existing_message_and_conflict_is_rejected(self):
+        key = str(uuid.uuid4())
+        headers = {**self.auth(self.owner, self.tenant_a), "Idempotency-Key": key}
+        url = f"{CONVERSATIONS}/{self.conversation.id}/messages"
+        first = self.client.post(url, headers=headers, json={"type": "text", "text": "hello"})
+        duplicate = self.client.post(url, headers=headers, json={"type": "text", "text": "hello"})
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertEqual(duplicate.status_code, 201, duplicate.text)
+        self.assertEqual(first.json()["id"], duplicate.json()["id"])
+        self.assertEqual(len(self.send_api.requests), 1)
+
+        conflict = self.client.post(url, headers=headers, json={"type": "text", "text": "different"})
+        self.assertEqual(conflict.status_code, 409)
+        self.assertEqual(len(self.send_api.requests), 1)
+
+    def test_ambiguous_provider_failure_is_not_retried_for_same_key(self):
+        key = str(uuid.uuid4())
+        headers = {**self.auth(self.owner, self.tenant_a), "Idempotency-Key": key}
+        url = f"{CONVERSATIONS}/{self.conversation.id}/messages"
+        self.send_api.network_down = True
+        first = self.client.post(url, headers=headers, json={"type": "text", "text": "hello"})
+        retry = self.client.post(url, headers=headers, json={"type": "text", "text": "hello"})
+        self.assertEqual(first.status_code, 502)
+        self.assertEqual(retry.status_code, 201)
+        self.assertEqual(retry.json()["status"], "pending")
+        self.assertEqual(len(self.send_api.requests), 1)
+
+    def test_idempotency_keys_are_scoped_to_tenant(self):
+        contact_b = self.make_contact(self.tenant_b, "+14155550102", first_name="Tenant B")
+        conversation_b = self.make_conversation(self.tenant_b, contact_b, self.wa_b)
+        self.db.commit()
+        key = str(uuid.uuid4())
+        response_a = self.client.post(
+            f"{CONVERSATIONS}/{self.conversation.id}/messages",
+            headers={**self.auth(self.owner, self.tenant_a), "Idempotency-Key": key},
+            json={"type": "text", "text": "hello"},
+        )
+        response_b = self.client.post(
+            f"{CONVERSATIONS}/{conversation_b.id}/messages",
+            headers={**self.auth(self.owner_b, self.tenant_b), "Idempotency-Key": key},
+            json={"type": "text", "text": "hello"},
+        )
+        self.assertEqual(response_a.status_code, 201, response_a.text)
+        self.assertEqual(response_b.status_code, 201, response_b.text)
+        self.assertNotEqual(response_a.json()["id"], response_b.json()["id"])
+        self.assertEqual(len(self.send_api.requests), 2)

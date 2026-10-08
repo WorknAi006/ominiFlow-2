@@ -17,6 +17,7 @@ from app.models.whatsapp_event import (
     WhatsAppEventType,
 )
 from app.models.contact import Contact
+from app.models.contact_identity import ContactIdentity
 from app.models.conversation import (
     ACTIVE_CONVERSATION_STATUSES,
     Conversation,
@@ -30,6 +31,11 @@ from app.models.message import (
 )
 from app.models.message_media import MediaStatus, MessageMedia
 from app.models.message_template import USABLE_TEMPLATE_STATUSES, MessageTemplate
+from app.models.automation import (
+    Automation, AutomationEdge, AutomationExecution, AutomationExecutionLog,
+    AutomationExecutionStatus, AutomationNode, AutomationNodeType, AutomationStatus, AutomationTrigger,
+    AutomationWorkerHeartbeat,
+)
 
 
 __all__ = [
@@ -48,6 +54,7 @@ __all__ = [
     "WhatsAppEventStatus",
     "WhatsAppEventType",
     "Contact",
+    "ContactIdentity",
     "ACTIVE_CONVERSATION_STATUSES",
     "Conversation",
     "ConversationStatus",
@@ -59,4 +66,7 @@ __all__ = [
     "MessageMedia",
     "USABLE_TEMPLATE_STATUSES",
     "MessageTemplate",
+    "Automation", "AutomationEdge", "AutomationNode", "AutomationExecution", "AutomationExecutionLog",
+    "AutomationStatus", "AutomationTrigger", "AutomationNodeType", "AutomationExecutionStatus",
+    "AutomationWorkerHeartbeat",
 ]

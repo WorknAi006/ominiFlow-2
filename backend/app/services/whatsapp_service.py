@@ -21,6 +21,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from sqlalchemy import func
+
 from app.integrations.base import (
     ProviderCredentials,
     ProviderNotConfiguredError,
@@ -277,6 +279,94 @@ def connect_whatsapp_channel(
     )
 
     return channel_service.get_channel(db, tenant_id, channel_id)
+
+
+# =========================
+# CONNECTION HEALTH CHECK (read-only)
+# =========================
+
+@dataclass(frozen=True)
+class ConnectionCheckResult:
+    healthy: bool
+    detail: str
+    webhook_subscribed: bool | None = None
+    display_phone_number: str | None = None
+    verified_name: str | None = None
+    quality_rating: str | None = None
+    last_event_at: datetime | None = None
+
+
+def check_whatsapp_channel(
+    db: Session,
+    tenant_id: uuid.UUID,
+    channel_id: uuid.UUID,
+) -> ConnectionCheckResult:
+    """
+    Verify a connected WhatsApp channel against Meta without mutating it:
+    the stored token is decrypted in memory only, the account is read back,
+    and the WABA's webhook subscription is checked. Never returns secrets.
+    """
+
+    channel = _load_channel(db, tenant_id, channel_id)
+
+    if channel.channel_type != ChannelType.WHATSAPP:
+        raise NotWhatsAppChannelError("Channel is not a WhatsApp channel.")
+
+    provider = _provider()
+
+    if not provider.is_configured():
+        raise WhatsAppNotConfiguredError(
+            "WhatsApp integration is not configured."
+        )
+
+    last_event_at = (
+        db.query(func.max(WhatsAppEvent.occurred_at))
+        .filter(WhatsAppEvent.channel_id == channel.id)
+        .scalar()
+    )
+
+    if (
+        channel.status != ChannelStatus.CONNECTED
+        or channel.access_token_encrypted is None
+    ):
+        return ConnectionCheckResult(
+            healthy=False,
+            detail="Channel is not connected. Connect it to send and receive messages.",
+            last_event_at=last_event_at,
+        )
+
+    waba_id = channel.external_business_id
+    token = get_credential_service().decrypt(channel.access_token_encrypted)
+    credentials = ProviderCredentials(access_token=token)
+
+    # No DB transaction is held while waiting on Meta.
+    db.rollback()
+    channel = _load_channel(db, tenant_id, channel_id)
+
+    try:
+        info = provider.get_account_info(channel, credentials)
+        webhook_subscribed = (
+            provider.is_webhook_subscribed(credentials, waba_id)
+            if waba_id else None
+        )
+    except ProviderVerificationError as exc:
+        return ConnectionCheckResult(
+            healthy=False,
+            detail=str(exc)[:1000],
+            last_event_at=last_event_at,
+        )
+    except ProviderUnavailableError as exc:
+        raise WhatsAppUnavailableError(str(exc)) from None
+
+    return ConnectionCheckResult(
+        healthy=True,
+        detail="WhatsApp connection is healthy.",
+        webhook_subscribed=webhook_subscribed,
+        display_phone_number=info.metadata.get("display_phone_number"),
+        verified_name=info.metadata.get("verified_name"),
+        quality_rating=info.metadata.get("quality_rating"),
+        last_event_at=last_event_at,
+    )
 
 
 # =========================

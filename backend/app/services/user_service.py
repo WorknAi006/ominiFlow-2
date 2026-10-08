@@ -23,6 +23,7 @@ from app.schemas.team import (
     InvitationAcceptRequest,
     InvitationResponse,
     InviteTeamMemberRequest,
+    RoleResponse,
     TeamMemberListResponse,
     TeamMemberResponse,
     UpdateTeamMemberRequest,
@@ -298,6 +299,49 @@ def _ensure_owner_remains(
         raise LastOwnerError(
             "A workspace must keep at least one active owner."
         )
+
+
+# =========================
+# ROLES
+# =========================
+
+def list_assignable_roles(
+    db: Session,
+    actor_role: Role,
+) -> list[RoleResponse]:
+    """
+    Active roles with an `assignable` flag for the requesting member,
+    mirroring the invite/update privilege rules (subset of the actor's
+    permissions; only an OWNER may assign OWNER). The flag only guides the
+    UI; invite/update still enforce the rule server-side.
+    """
+
+    roles = (
+        db.query(Role)
+        .filter(Role.is_active.is_(True))
+        .order_by(Role.name.asc())
+        .all()
+    )
+
+    actor_permissions = _get_role_permission_names(db, actor_role.id)
+    actor_is_owner = actor_role.name == OWNER_ROLE
+
+    def assignable(role: Role) -> bool:
+        if role.name == OWNER_ROLE:
+            return actor_is_owner
+        if role.id == actor_role.id:
+            return True
+        return _get_role_permission_names(db, role.id) <= actor_permissions
+
+    return [
+        RoleResponse(
+            id=role.id,
+            name=role.name,
+            description=role.description,
+            assignable=assignable(role),
+        )
+        for role in roles
+    ]
 
 
 # =========================

@@ -23,6 +23,7 @@ class ChannelType(StrEnum):
     WHATSAPP = "whatsapp"
     INSTAGRAM = "instagram"
     FACEBOOK = "facebook"
+    WEB_CHAT = "web_chat"
 
 
 class ChannelStatus(StrEnum):

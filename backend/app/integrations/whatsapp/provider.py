@@ -17,7 +17,14 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from app.core.phone import InvalidPhoneNumberError, normalize_phone, to_whatsapp_id
+from app.integrations.whatsapp.messages import (
+    parse_inbound_message,
+    profile_name,
+    reply_context_id,
+)
 from app.integrations.base import (
+    NormalizedInboundEvent,
     ChannelProvider,
     ProviderAccountInfo,
     ProviderCredentials,
@@ -238,6 +245,34 @@ class WhatsAppProvider(ChannelProvider):
         if body.get("success") is not True:
             raise ProviderVerificationError("Webhook subscription failed.")
 
+    def is_webhook_subscribed(
+        self,
+        credentials: ProviderCredentials,
+        waba_id: str,
+    ) -> bool:
+        """
+        Report whether our app is in the WABA's subscribed_apps list, i.e.
+        whether this account's webhooks reach us. Read-only diagnostic.
+        """
+        with self._client() as client:
+            body = self._call(
+                lambda: client.request(
+                    "GET", f"{waba_id}/subscribed_apps",
+                    access_token=credentials.access_token,
+                ),
+                "Webhook subscription could not be read.",
+            )
+            app_id = client.app_id
+
+        for entry in body.get("data") or []:
+            if not isinstance(entry, dict):
+                continue
+            data = entry.get("whatsapp_business_api_data")
+            candidate = data.get("id") if isinstance(data, dict) else entry.get("id")
+            if candidate is not None and str(candidate) == app_id:
+                return True
+        return False
+
     def send_text_message(
         self,
         credentials: ProviderCredentials,
@@ -259,6 +294,88 @@ class WhatsAppProvider(ChannelProvider):
             {"type": "text", "text": {"preview_url": False, "body": text}},
             to,
             reply_to_external_id,
+        )
+
+    # ---------- generic outbound contract (ChannelProvider) ----------
+
+    def recipient_for(self, connection: ChannelConnection, contact: Any) -> str:
+        """
+        WhatsApp recipient id (digits only) derived from the contact's
+        WhatsApp identifier or phone number. Raises ValueError when no
+        valid number is available; the block check stays in the service.
+        """
+        candidate = (
+            getattr(contact, "external_identifier", None)
+            or getattr(contact, "normalized_phone_number", None)
+        )
+        if not candidate:
+            raise ValueError("This contact has no WhatsApp number.")
+        try:
+            return to_whatsapp_id(normalize_phone(candidate))
+        except InvalidPhoneNumberError:
+            raise ValueError("This contact has no valid WhatsApp number.") from None
+
+    def send_text(
+        self,
+        credentials: ProviderCredentials,
+        connection: ChannelConnection,
+        recipient: str,
+        text: str,
+        reply_to_external_id: str | None = None,
+    ) -> str:
+        """Generic text send; delegates to the WhatsApp Cloud API call."""
+        if not connection.external_account_id:
+            raise ProviderVerificationError("Channel has no phone_number_id.")
+        return self.send_text_message(
+            credentials,
+            connection.external_account_id,
+            recipient,
+            text,
+            reply_to_external_id,
+        )
+
+    def normalize_inbound_message(
+        self,
+        connection: ChannelConnection,
+        raw: dict[str, Any],
+    ) -> NormalizedInboundEvent | None:
+        """
+        Normalize a stored WhatsApp event into the common inbound event.
+        `raw` carries the event payload and the routing-derived ids/time:
+        {"payload", "external_message_id", "external_sender_id",
+         "external_event_id", "occurred_at"}. Returns None for malformed
+        events or ones missing a message id or sender (ignored upstream).
+        """
+        payload = raw.get("payload") if isinstance(raw, dict) else None
+        message = payload.get("message") if isinstance(payload, dict) else None
+        if not isinstance(message, dict):
+            return None
+
+        external_message_id = raw.get("external_message_id") or message.get("id")
+        external_sender_id = raw.get("external_sender_id") or message.get("from")
+        if not external_message_id or not external_sender_id:
+            return None
+
+        content = parse_inbound_message(message)
+
+        return NormalizedInboundEvent(
+            tenant_id=connection.tenant_id,
+            channel_connection_id=connection.id,
+            channel_type=ChannelType.WHATSAPP.value,
+            external_message_id=str(external_message_id),
+            external_sender_id=str(external_sender_id),
+            # A WhatsApp wa_id is the customer's phone number, so it also
+            # drives the existing phone-based contact dedup.
+            phone_hint=str(external_sender_id),
+            sender_display_name=profile_name(payload.get("contact")),
+            message_type=content.message_type,
+            text=content.text,
+            media_type=content.media_type,
+            media_metadata=content.media_metadata,
+            reply_to_external_id=reply_context_id(message),
+            occurred_at=raw.get("occurred_at"),
+            external_event_id=raw.get("external_event_id"),
+            metadata=content.metadata,
         )
 
     def send_template_message(

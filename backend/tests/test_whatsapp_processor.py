@@ -428,9 +428,11 @@ class OutboundTests(ProcessorTestCase):
 
     def send(self, body=None, actor=None, conversation=None):
         conversation = conversation or self.conversation
+        headers = self.auth(actor or self.agent, self.tenant_a)
+        headers["Idempotency-Key"] = str(uuid.uuid4())
         return self.client.post(
             f"/api/v1/conversations/{conversation.id}/messages",
-            headers=self.auth(actor or self.agent, self.tenant_a),
+            headers=headers,
             json=body if body is not None else {"type": "text", "text": "Your order ships today."},
         )
 
@@ -561,7 +563,7 @@ class OutboundTests(ProcessorTestCase):
         response = self.send()
         self.assertEqual(response.status_code, 502)
         [message] = self.messages_for(direction="outbound")
-        self.assertEqual(message.status, "failed")
+        self.assertEqual(message.status, "pending")
         self.assertEqual(self.updates_for_conversation(self.conversation), [])
 
     def test_rejected_before_any_provider_call(self):
@@ -603,13 +605,14 @@ class OutboundTests(ProcessorTestCase):
 
     def test_invalid_conversation_ids(self):
         headers = self.auth(self.agent, self.tenant_a)
+        headers["Idempotency-Key"] = str(uuid.uuid4())
         body = {"type": "text", "text": "hi"}
         self.assertEqual(
             self.client.post(f"/api/v1/conversations/{uuid.uuid4()}/messages", headers=headers, json=body).status_code,
             404,
         )
         self.assertEqual(
-            self.client.post("/api/v1/conversations/not-a-uuid/messages", headers=headers, json=body).status_code,
+            self.client.post("/api/v1/conversations/not-a-uuid/messages", headers={**headers, "Idempotency-Key": str(uuid.uuid4())}, json=body).status_code,
             422,
         )
 
@@ -704,6 +707,7 @@ class EndToEndTests(ProcessorTestCase):
             session.close()
 
         headers = self.auth(self.agent, self.tenant_a)
+        headers["Idempotency-Key"] = str(uuid.uuid4())
         inbox = self.client.get("/api/v1/conversations", headers=headers).json()
         self.assertEqual(inbox["total"], 1)
         [item] = inbox["items"]

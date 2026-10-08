@@ -11,12 +11,13 @@ verifies the provider signature, then resolves the tenant/channel with
 channel_service.find_connected_channel(channel_type, external_account_id).
 Webhooks never accept a tenant_id from the caller.
 """
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, ClassVar
 
-from app.models import ChannelConnection, ChannelType
+from app.models import ChannelConnection, ChannelType, MessageType
 
 
 class ProviderError(Exception):
@@ -66,9 +67,46 @@ class ProviderAccountInfo:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class NormalizedInboundEvent:
+    """
+    Channel-neutral inbound message, produced by a provider's normalizer
+    from its raw webhook payload and consumed by the common inbound event
+    service. Provider-specific fields live in `metadata`; nothing
+    provider-specific leaks into the generic processing path.
+
+    `external_sender_id` is resolved through ContactIdentity
+    (channel_type + external_sender_id). `phone_hint` is set only by
+    channels whose sender id is a phone number (WhatsApp wa_id), so the
+    existing phone-based contact dedup keeps working; other channels leave
+    it None and resolve purely by identity.
+    """
+
+    tenant_id: uuid.UUID
+    channel_connection_id: uuid.UUID
+    channel_type: str
+    external_message_id: str
+    external_sender_id: str
+    message_type: MessageType
+    occurred_at: datetime
+    external_event_id: str | None = None
+    sender_display_name: str | None = None
+    phone_hint: str | None = None
+    text: str | None = None
+    media_type: str | None = None
+    media_metadata: dict[str, Any] | None = None
+    external_thread_id: str | None = None
+    reply_to_external_id: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
 class ChannelProvider(ABC):
     channel_type: ClassVar[ChannelType]
     display_name: ClassVar[str]
+    # Whether outbound sending needs stored provider credentials. External
+    # APIs (WhatsApp/Meta) need a token; an internal channel (Web Chat)
+    # delivers through Omniflow itself and needs none.
+    requires_credentials: ClassVar[bool] = True
 
     @abstractmethod
     def connect(
@@ -109,6 +147,42 @@ class ChannelProvider(ABC):
     ) -> ProviderAccountInfo:
         """Fetch account details from the provider."""
 
+    # ---------- outbound messaging (generic contract) ----------
+
+    @abstractmethod
+    def recipient_for(self, connection: ChannelConnection, contact: Any) -> str:
+        """
+        Resolve the channel-specific recipient address for a contact (e.g.
+        the WhatsApp recipient id). Keeps provider-specific addressing out
+        of the generic outbound service.
+        """
+
+    @abstractmethod
+    def send_text(
+        self,
+        credentials: ProviderCredentials,
+        connection: ChannelConnection,
+        recipient: str,
+        text: str,
+        reply_to_external_id: str | None = None,
+    ) -> str:
+        """Send a free-form text message; return the provider message id."""
+
+    # ---------- inbound normalization (generic contract) ----------
+
+    @abstractmethod
+    def normalize_inbound_message(
+        self,
+        connection: ChannelConnection,
+        raw: dict[str, Any],
+    ) -> "NormalizedInboundEvent | None":
+        """
+        Turn a raw stored inbound event into a NormalizedInboundEvent, or
+        None when it is not a processable inbound message (malformed /
+        missing id or sender / unsupported). All provider-specific payload
+        parsing lives here, never in the common inbound service.
+        """
+
 
 class UnimplementedChannelProvider(ChannelProvider):
     """
@@ -134,4 +208,13 @@ class UnimplementedChannelProvider(ChannelProvider):
         raise self._not_implemented()
 
     def get_account_info(self, connection, credentials):
+        raise self._not_implemented()
+
+    def recipient_for(self, connection, contact):
+        raise self._not_implemented()
+
+    def send_text(self, credentials, connection, recipient, text, reply_to_external_id=None):
+        raise self._not_implemented()
+
+    def normalize_inbound_message(self, connection, raw):
         raise self._not_implemented()

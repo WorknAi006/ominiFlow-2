@@ -107,6 +107,8 @@ class FakeGraph:
         }
         self.wabas = {WABA: {"name": "Acme WABA", "phones": [PHONE]}}
         self.codes = {GOOD_CODE: GOOD_TOKEN}
+        # WABA ids whose subscribed_apps GET should report our app missing.
+        self.unsubscribed: set[str] = set()
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -163,6 +165,11 @@ class FakeGraph:
 
         if parts[1] == "subscribed_apps":
             self.subscriptions.append((request.method, waba_id))
+            if request.method == "GET":
+                apps = [] if waba_id in self.unsubscribed else [
+                    {"whatsapp_business_api_data": {"id": APP_ID, "name": "Omniflow"}}
+                ]
+                return httpx.Response(200, json={"data": apps})
             return httpx.Response(200, json={"success": True})
 
         return _graph_error(404, "Unknown path.", 100)
@@ -819,3 +826,121 @@ class WebhookTests(WhatsAppTestCase):
         self.assertNotIn(secret_text, logged)
         self.assertNotIn(CUSTOMER, logged)
         self.assertNotIn(APP_SECRET, logged)
+
+
+# =========================
+# TEST CONNECTION (read-only health check)
+# =========================
+
+TEST_URL = "/api/v1/channels/{id}/whatsapp/test"
+
+
+class TestConnectionTests(WhatsAppTestCase):
+
+    @classmethod
+    def create_fixtures(cls) -> None:
+        super().create_fixtures()
+        cls.connected = cls.make_channel(
+            cls.tenant_a, ChannelType.WHATSAPP, "Connected",
+            status=ChannelStatus.CONNECTED,
+            external_account_id=PHONE, external_business_id=WABA,
+            access_token_encrypted=get_credential_service().encrypt(GOOD_TOKEN),
+        )
+        cls.pending = cls.make_channel(
+            cls.tenant_a, ChannelType.WHATSAPP, "Pending",
+            status=ChannelStatus.PENDING,
+        )
+        cls.bad_creds = cls.make_channel(
+            cls.tenant_a, ChannelType.WHATSAPP, "Bad Creds",
+            status=ChannelStatus.CONNECTED,
+            external_account_id=OTHER_PHONE, external_business_id=WABA,
+            access_token_encrypted=get_credential_service().encrypt(BAD_TOKEN),
+        )
+        cls.connected_b = cls.make_channel(
+            cls.tenant_b, ChannelType.WHATSAPP, "Connected B",
+            status=ChannelStatus.CONNECTED,
+            external_account_id="100000000000009", external_business_id=WABA,
+            access_token_encrypted=get_credential_service().encrypt(GOOD_TOKEN),
+        )
+
+    def check(self, channel, actor=None, tenant=None):
+        return self.client.post(
+            TEST_URL.format(id=channel.id),
+            headers=self.auth(actor or self.owner, tenant or self.tenant_a),
+        )
+
+    def assert_no_secrets(self, text):
+        for secret in ALL_SECRETS:
+            self.assertNotIn(secret, text)
+
+    def test_healthy_connection(self):
+        response = self.check(self.connected)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertTrue(body["healthy"])
+        self.assertIn("healthy", body["detail"])
+        self.assertTrue(body["webhook_subscribed"])
+        self.assertEqual(body["display_phone_number"], "+1 555-0100")
+        self.assertEqual(body["verified_name"], "Acme Support")
+        self.assertIsNone(body["last_event_at"])
+        self.assert_no_secrets(response.text)
+
+        # The check is read-only: status and credentials are untouched.
+        channel = self.reload(self.connected)
+        self.assertEqual(channel.status, ChannelStatus.CONNECTED)
+        self.assertIsNotNone(channel.access_token_encrypted)
+
+    def test_webhook_not_subscribed_is_reported(self):
+        self.graph.unsubscribed.add(WABA)
+        body = self.check(self.connected).json()
+        self.assertTrue(body["healthy"])
+        self.assertFalse(body["webhook_subscribed"])
+
+    def test_invalid_token_is_unhealthy_not_error(self):
+        response = self.check(self.bad_creds)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertFalse(body["healthy"])
+        self.assertTrue(body["detail"])
+        self.assert_no_secrets(response.text)
+
+    def test_not_connected_channel_skips_meta(self):
+        response = self.check(self.pending)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertFalse(body["healthy"])
+        self.assertIn("not connected", body["detail"])
+        self.assertIsNone(body["webhook_subscribed"])
+        self.assertEqual(self.graph.requests, [])
+
+    def test_non_whatsapp_channel_rejected(self):
+        response = self.check(self.ig_a)
+        self.assertEqual(response.status_code, 422)
+
+    def test_meta_unavailable_returns_502(self):
+        self.graph.network_down = True
+        response = self.check(self.connected)
+        self.assertEqual(response.status_code, 502)
+        self.assert_no_secrets(response.text)
+
+    def test_requires_channel_update_permission(self):
+        for actor in (self.agent, self.viewer):
+            with self.subTest(actor=actor.email):
+                self.assertEqual(self.check(self.connected, actor=actor).status_code, 403)
+        for actor in (self.owner, self.manager):
+            with self.subTest(actor=actor.email):
+                self.assertEqual(self.check(self.connected, actor=actor).status_code, 200)
+
+    def test_cross_tenant_blocked(self):
+        response = self.check(self.connected_b, actor=self.owner, tenant=self.tenant_a)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(self.graph.requests, [])
+
+    def test_unknown_channel_404(self):
+        self.assertEqual(
+            self.client.post(
+                TEST_URL.format(id=uuid.uuid4()),
+                headers=self.auth(self.owner, self.tenant_a),
+            ).status_code,
+            404,
+        )

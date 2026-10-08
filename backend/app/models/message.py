@@ -87,6 +87,10 @@ class Message(Base, UUIDMixin, TimestampMixin):
         index=True,
     )
 
+    # Client supplied outbound request key; scoped to tenant for safe retries.
+    idempotency_key: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    idempotency_payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     sender_identifier: Mapped[str | None] = mapped_column(String(255), nullable=True)
     recipient_identifier: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
@@ -154,6 +158,13 @@ class Message(Base, UUIDMixin, TimestampMixin):
             "external_message_id",
             unique=True,
             postgresql_where=sql_text("external_message_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_messages_tenant_idempotency_key",
+            "tenant_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=sql_text("idempotency_key IS NOT NULL"),
         ),
         # Conversation timeline pagination.
         Index(

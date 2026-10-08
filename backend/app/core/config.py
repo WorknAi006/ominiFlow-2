@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     media_download_timeout_seconds: float = 30.0
     media_max_download_attempts: int = 3
 
+    automation_max_nodes: int = 50
+    automation_max_steps: int = 50
+    automation_max_attempts: int = 5
+    automation_execution_timeout_seconds: int = 300
+    automation_stale_claim_seconds: int = 60
+    automation_worker_healthy_seconds: int = 45
+    automation_worker_delayed_seconds: int = 120
+
     @property
     def allowed_frontend_origins(self) -> list[str]:
         configured = self.frontend_origins or self.frontend_url

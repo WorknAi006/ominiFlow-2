@@ -5,8 +5,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.core.phone import InvalidPhoneNumberError, normalize_phone
-from app.models import Contact
+from app.core.phone import InvalidPhoneNumberError, normalize_phone, to_whatsapp_id
+from app.models import ChannelType, Contact, ContactIdentity
 from app.schemas.contact import (
     ContactCreate,
     ContactListResponse,
@@ -309,5 +309,151 @@ def get_or_create_by_phone(
     if external_identifier and not contact.external_identifier:
         contact.external_identifier = external_identifier
 
+    # Record the channel-agnostic WhatsApp identity (wa_id) for this contact
+    # alongside the existing phone-based dedup, so the same person can later
+    # hold identities on other channels. The phone index stays the source of
+    # truth for WhatsApp contact resolution.
+    _ensure_identity(
+        db,
+        tenant_id,
+        contact.id,
+        ChannelType.WHATSAPP,
+        external_identifier or to_whatsapp_id(normalized),
+        display_name=profile_name,
+    )
+
     db.flush()
+    return contact
+
+
+def resolve_inbound_contact(
+    db: Session,
+    tenant_id: uuid.UUID,
+    channel_type: ChannelType | str,
+    external_sender_id: str,
+    *,
+    phone_hint: str | None = None,
+    display_name: str | None = None,
+) -> Contact:
+    """
+    Resolve the contact for an inbound event by its channel identity. When
+    the channel's sender id is a phone number (phone_hint, e.g. WhatsApp),
+    the existing phone-based find-or-create is used so phone dedup and the
+    WhatsApp identity recording behave exactly as before. Channels without
+    a phone resolve purely through ContactIdentity.
+    """
+    if phone_hint is not None:
+        return get_or_create_by_phone(
+            db,
+            tenant_id,
+            phone_hint,
+            external_identifier=external_sender_id,
+            profile_name=display_name,
+        )
+    return get_or_create_by_identity(
+        db, tenant_id, channel_type, external_sender_id, display_name=display_name,
+    )
+
+
+def _ensure_identity(
+    db: Session,
+    tenant_id: uuid.UUID,
+    contact_id: uuid.UUID,
+    channel_type: ChannelType | str,
+    external_id: str,
+    *,
+    display_name: str | None = None,
+) -> None:
+    """
+    Idempotently attach a channel identity to an existing contact. Safe to
+    call repeatedly: the partial unique index converges concurrent callers.
+    """
+    db.execute(
+        insert(ContactIdentity)
+        .values(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            contact_id=contact_id,
+            channel_type=str(channel_type),
+            external_id=external_id,
+            display_name=display_name,
+        )
+        .on_conflict_do_nothing(
+            index_elements=["tenant_id", "channel_type", "external_id"],
+        )
+    )
+
+
+def find_by_identity(
+    db: Session,
+    tenant_id: uuid.UUID,
+    channel_type: ChannelType | str,
+    external_id: str,
+) -> Contact | None:
+    identity = (
+        db.query(ContactIdentity)
+        .filter(
+            ContactIdentity.tenant_id == tenant_id,
+            ContactIdentity.channel_type == str(channel_type),
+            ContactIdentity.external_id == external_id,
+        )
+        .first()
+    )
+    if identity is None:
+        return None
+    return db.get(Contact, identity.contact_id)
+
+
+def get_or_create_by_identity(
+    db: Session,
+    tenant_id: uuid.UUID,
+    channel_type: ChannelType | str,
+    external_id: str,
+    display_name: str | None = None,
+) -> Contact:
+    """
+    Resolve a contact by its channel identity, creating both the contact and
+    the identity when none exists. Tenant-safe: the same external_id in a
+    different tenant resolves to a different contact. Race-safe via the
+    (tenant_id, channel_type, external_id) unique index inside the caller's
+    transaction (no commit).
+    """
+
+    existing = find_by_identity(db, tenant_id, channel_type, external_id)
+    if existing is not None:
+        return existing
+
+    contact = Contact(
+        tenant_id=tenant_id,
+        display_name=display_name,
+        is_blocked=False,
+    )
+    db.add(contact)
+    db.flush()
+
+    inserted = db.execute(
+        insert(ContactIdentity)
+        .values(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            contact_id=contact.id,
+            channel_type=str(channel_type),
+            external_id=external_id,
+            display_name=display_name,
+        )
+        .on_conflict_do_nothing(
+            index_elements=["tenant_id", "channel_type", "external_id"],
+        )
+        .returning(ContactIdentity.id)
+    ).scalar_one_or_none()
+
+    if inserted is None:
+        # A concurrent caller created the identity first; drop the contact we
+        # speculatively created and return the winning contact.
+        db.delete(contact)
+        db.flush()
+        winner = find_by_identity(db, tenant_id, channel_type, external_id)
+        assert winner is not None  # the conflicting identity must exist
+        return winner
+
     return contact

@@ -30,11 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.integrations.whatsapp.messages import (
-    parse_inbound_message,
-    profile_name,
-    reply_context_id,
-)
+from app.integrations.registry import get_provider
 from app.models import (
     ChannelConnection,
     ChannelType,
@@ -44,9 +40,7 @@ from app.models import (
     WhatsAppEventType,
 )
 from app.services import (
-    contact_service,
-    conversation_service,
-    media_service,
+    inbound_event_service,
     message_service,
     realtime_service,
 )
@@ -104,110 +98,33 @@ def _process_message(
     channel: ChannelConnection,
 ) -> list[dict[str, Any]]:
     """
-    Returns realtime events for a newly created message (message.created,
-    then conversation.updated), published by process_event only after
-    commit. Duplicates return no events.
+    Normalize the WhatsApp event, then hand it to the channel-neutral
+    inbound service. All WhatsApp payload parsing happens in the provider's
+    normalizer; the common service owns contact/conversation/message
+    creation, automation and realtime. Returns realtime events published by
+    process_event only after commit; duplicates return no events.
     """
-    payload = event.payload if isinstance(event.payload, dict) else {}
-    message = payload.get("message")
-
-    if not isinstance(message, dict):
-        raise _IgnoreEvent("Malformed message event.")
-
-    external_id = event.wa_message_id or message.get("id")
-    sender = event.wa_id or message.get("from")
-
-    if not external_id or not sender:
-        raise _IgnoreEvent("Message has no id or sender.")
-
-    # Already stored (e.g. event replayed): do not touch contact or
-    # conversation state.
-    if message_service.find_by_external_id(db, event.tenant_id, channel.id, external_id):
-        return []
-
-    try:
-        contact = contact_service.get_or_create_by_phone(
-            db,
-            event.tenant_id,
-            sender,
-            external_identifier=sender,
-            profile_name=profile_name(payload.get("contact")),
-        )
-    except InvalidContactError:
-        raise _IgnoreEvent("Sender is not a valid phone number.") from None
-
-    conversation = conversation_service.get_or_create_conversation(
-        db, event.tenant_id, contact.id, channel.id,
-    )
-
-    content = parse_inbound_message(message)
-
-    reply_to_id = None
-    context_id = reply_context_id(message)
-    if context_id:
-        replied = message_service.find_by_external_id(
-            db, event.tenant_id, channel.id, context_id,
-        )
-        reply_to_id = replied.id if replied else None
-
     occurred_at = event.occurred_at or event.created_at or _utcnow()
 
-    created = message_service.create_inbound_message(
-        db,
-        conversation=conversation,
-        contact=contact,
-        channel=channel,
-        external_message_id=external_id,
-        message_type=content.message_type,
-        sender_identifier=sender,
-        recipient_identifier=channel.external_account_id,
-        sent_at=occurred_at,
-        text=content.text,
-        media_type=content.media_type,
-        media_metadata=content.media_metadata,
-        metadata=content.metadata,
-        reply_to_message_id=reply_to_id,
+    provider = get_provider(channel.channel_type)
+    normalized = provider.normalize_inbound_message(
+        channel,
+        {
+            "payload": event.payload if isinstance(event.payload, dict) else {},
+            "external_message_id": event.wa_message_id,
+            "external_sender_id": event.wa_id,
+            "external_event_id": event.dedupe_key,
+            "occurred_at": occurred_at,
+        },
     )
 
-    if created is not None:
-        conversation_service.record_activity(db, conversation, occurred_at, inbound=True)
+    if normalized is None:
+        raise _IgnoreEvent("Malformed or unsupported inbound message.")
 
-        media = content.media_metadata or {}
-        if media.get("id"):
-            # Queue the download; the media worker fetches it later (no
-            # HTTP inside this transaction).
-            media_service.register_pending(
-                db,
-                created,
-                provider_media_id=str(media["id"]),
-                media_kind=content.message_type.value,
-                declared_mime=media.get("mime_type"),
-                declared_filename=media.get("filename"),
-                declared_sha256=media.get("sha256"),
-            )
-
-        message_created = realtime_service.build_message_created_event(
-            tenant_id=event.tenant_id,
-            conversation_id=conversation.id,
-            message_id=created.id,
-            direction=created.direction,
-            message_type=created.message_type,
-            text=created.text,
-            created_at=created.created_at,
-            contact_id=contact.id,
-            contact_name=contact_service.contact_name(contact),
-            contact_phone=contact.normalized_phone_number,
-        )
-        # State after record_activity (unread +1 once, last_message_at never
-        # backwards, latest message by the list's ordering).
-        conversation_updated = realtime_service.build_conversation_updated_event(
-            tenant_id=event.tenant_id,
-            conversation_id=conversation.id,
-            **conversation_service.get_update_snapshot(db, conversation),
-        )
-        return [message_created, conversation_updated]
-
-    return []
+    try:
+        return inbound_event_service.process_inbound_event(db, normalized)
+    except InvalidContactError:
+        raise _IgnoreEvent("Sender is not a valid phone number.") from None
 
 
 def _status_error(status: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -345,7 +262,7 @@ def process_event(db: Session, event_id: uuid.UUID) -> ProcessOutcome:
         for realtime_event in realtime_events:
             realtime_service.publish_event(realtime_event)
 
-    logger.info("WhatsApp event %s %s.", event_id, outcome.value)
+        logger.info("WhatsApp event %s %s.", event_id, outcome.value)
     return outcome
 
 

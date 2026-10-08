@@ -244,6 +244,7 @@ def list_conversations(
     *,
     status: ConversationStatus | None = None,
     channel_id: uuid.UUID | None = None,
+    contact_id: uuid.UUID | None = None,
     assigned_user_id: uuid.UUID | None = None,
     unassigned: bool = False,
     unread: bool | None = None,
@@ -256,6 +257,8 @@ def list_conversations(
         filters.append(Conversation.status == status)
     if channel_id is not None:
         filters.append(Conversation.channel_connection_id == channel_id)
+    if contact_id is not None:
+        filters.append(Conversation.contact_id == contact_id)
     if assigned_user_id is not None:
         filters.append(Conversation.assigned_user_id == assigned_user_id)
     if unassigned:

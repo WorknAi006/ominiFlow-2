@@ -222,6 +222,8 @@ def create_outbound_message(
     reply_to_message_id: uuid.UUID | None = None,
     message_type: MessageType = MessageType.TEXT,
     metadata: dict[str, Any] | None = None,
+    idempotency_key: uuid.UUID | None = None,
+    idempotency_payload_hash: str | None = None,
 ) -> Message:
     message = Message(
         tenant_id=conversation.tenant_id,
@@ -237,6 +239,8 @@ def create_outbound_message(
         status=MessageStatus.PENDING,
         sent_by_user_id=sent_by_user_id,
         reply_to_message_id=reply_to_message_id,
+        idempotency_key=idempotency_key,
+        idempotency_payload_hash=idempotency_payload_hash,
     )
     db.add(message)
     db.flush()

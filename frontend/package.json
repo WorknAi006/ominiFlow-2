@@ -6,19 +6,29 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "npm run test:auth && npm run test:inbox && npm run test:channels && npm run test:contacts && npm run test:team && npm run test:templates && npm run test:realtime && npm run test:automations",
     "lint": "eslint",
-    "test:realtime": "node --test scripts/test-realtime.mjs"
+    "test:realtime": "node --test scripts/test-realtime.mjs",
+    "test:auth": "node --test scripts/test-auth.mjs",
+    "test:inbox": "node --test scripts/test-inbox.mjs",
+    "test:channels": "node --test scripts/test-channels.mjs",
+    "test:contacts": "node --test scripts/test-contacts.mjs",
+    "test:team": "node --test scripts/test-team.mjs",
+    "test:templates": "node --test scripts/test-templates.mjs",
+    "test:automations": "node --test scripts/test-automations.mjs"
   },
   "dependencies": {
     "next": "16.3.8",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "ws": "8.22.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/ws": "8.18.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
     "tailwindcss": "^4",

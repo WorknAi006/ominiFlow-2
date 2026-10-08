@@ -34,6 +34,11 @@ SYSTEM_PERMISSIONS = [
     ("message:create", "Send messages."),
     ("template:read", "View message templates."),
     ("template:sync", "Synchronize message templates from providers."),
+    ("automation:read", "View automations and execution history."),
+    ("automation:create", "Create automations."),
+    ("automation:update", "Edit and validate automations."),
+    ("automation:delete", "Archive automations."),
+    ("automation:publish", "Activate and pause automations."),
 ]
 
 
@@ -73,6 +78,7 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
         "channel:update",
         "channel:delete",
         *INBOX_ALL_PERMISSIONS,
+        "automation:read", "automation:create", "automation:update", "automation:delete", "automation:publish",
     ],
     "MANAGER": [
         "tenant:read",
@@ -83,6 +89,7 @@ ROLE_PERMISSIONS: dict[str, list[str]] = {
         "channel:create",
         "channel:update",
         *INBOX_ALL_PERMISSIONS,
+        "automation:read", "automation:create", "automation:update", "automation:delete", "automation:publish",
     ],
     "AGENT": ["tenant:read", "user:read", "channel:read", *INBOX_AGENT_PERMISSIONS],
     "VIEWER": ["tenant:read", "user:read", "channel:read", *INBOX_READ_PERMISSIONS],

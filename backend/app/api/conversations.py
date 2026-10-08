@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Header, Query, status
 
 from app.api.dependencies import (
     CurrentTenant,
@@ -32,6 +32,7 @@ from app.services.template_service import (
 from app.services.outbound_message_service import (
     ChannelNotConnectedError,
     CredentialsUnavailableError,
+    IdempotencyConflictError,
     InvalidReplyError,
     MessageSendFailedError,
     ProviderNotConfiguredForSendError,
@@ -59,6 +60,7 @@ SEND_ERRORS = {
     TemplateNotFoundError: status.HTTP_422_UNPROCESSABLE_CONTENT,
     TemplateNotUsableError: status.HTTP_422_UNPROCESSABLE_CONTENT,
     TemplateParameterError: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    IdempotencyConflictError: status.HTTP_409_CONFLICT,
 }
 
 
@@ -74,6 +76,7 @@ def list_conversations(
     page_size: int = Query(default=20, ge=1, le=100),
     conversation_status: ConversationStatus | None = Query(default=None, alias="status"),
     channel_id: uuid.UUID | None = Query(default=None),
+    contact_id: uuid.UUID | None = Query(default=None),
     assigned_user_id: uuid.UUID | None = Query(default=None),
     unassigned: bool = Query(default=False),
     unread: bool | None = Query(default=None),
@@ -84,6 +87,7 @@ def list_conversations(
             db, tenant.id, page, page_size,
             status=conversation_status,
             channel_id=channel_id,
+            contact_id=contact_id,
             assigned_user_id=assigned_user_id,
             unassigned=unassigned,
             unread=unread,
@@ -186,6 +190,9 @@ def send_message(
     user: CurrentUser,
     tenant: CurrentTenant,
     db: DbSession,
+    idempotency_key: uuid.UUID = Header(..., alias="Idempotency-Key"),
 ):
     with service_errors(SEND_ERRORS):
-        return outbound_message_service.send_message(db, tenant.id, user, conversation_id, data)
+        return outbound_message_service.send_message(
+            db, tenant.id, user, conversation_id, data, idempotency_key,
+        )

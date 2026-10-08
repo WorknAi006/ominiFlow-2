@@ -176,6 +176,60 @@ def list_templates(
     )
 
 
+def list_all_templates(
+    db: Session,
+    tenant_id: uuid.UUID,
+    page: int,
+    page_size: int,
+    *,
+    channel_id: uuid.UUID | None = None,
+    status: str | None = None,
+    category: str | None = None,
+    language: str | None = None,
+    search: str | None = None,
+    include_inactive: bool = False,
+) -> TemplateListResponse:
+    """
+    Tenant-wide template listing for the Templates dashboard, with optional
+    channel/status/category/language filters. Always scoped to tenant_id;
+    a channel_id from another tenant simply yields no rows.
+    """
+
+    query = db.query(MessageTemplate).filter(MessageTemplate.tenant_id == tenant_id)
+
+    if channel_id is not None:
+        query = query.filter(MessageTemplate.channel_connection_id == channel_id)
+    if not include_inactive:
+        query = query.filter(MessageTemplate.is_active.is_(True))
+    if status:
+        query = query.filter(MessageTemplate.status == status.lower())
+    if category:
+        query = query.filter(MessageTemplate.category == category.lower())
+    if language:
+        query = query.filter(MessageTemplate.language == language)
+    if search:
+        query = query.filter(MessageTemplate.name.ilike(like_pattern(search), escape="\\"))
+
+    total = query.count()
+    templates = (
+        query.order_by(
+            MessageTemplate.name.asc(),
+            MessageTemplate.language.asc(),
+            MessageTemplate.id.asc(),
+        )
+        .offset(page_offset(page, page_size))
+        .limit(page_size)
+        .all()
+    )
+
+    return TemplateListResponse(
+        items=[to_template_response(t) for t in templates],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
 def get_template(db: Session, tenant_id: uuid.UUID, template_id: uuid.UUID) -> TemplateResponse:
     template = (
         db.query(MessageTemplate)

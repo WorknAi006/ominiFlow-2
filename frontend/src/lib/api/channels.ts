@@ -1,6 +1,6 @@
 import { apiRequest, type PaginatedResponse } from "./client";
 
-export const CHANNEL_TYPES = ["whatsapp", "instagram", "facebook"] as const;
+export const CHANNEL_TYPES = ["whatsapp", "instagram", "facebook", "web_chat"] as const;
 export type ChannelType = (typeof CHANNEL_TYPES)[number];
 
 export const CHANNEL_STATUSES = [

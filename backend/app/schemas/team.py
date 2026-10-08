@@ -38,6 +38,17 @@ class TeamMemberListResponse(BaseModel):
     page_size: int
 
 
+class RoleResponse(BaseModel):
+    id: UUID
+    name: str
+    description: str | None
+    # Whether the requesting member may assign or manage this role, per the
+    # existing privilege rules. The backend remains the final authority.
+    assignable: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class InviteTeamMemberRequest(BaseModel):
     email: EmailStr
     role_id: UUID

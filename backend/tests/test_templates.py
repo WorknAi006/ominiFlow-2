@@ -451,3 +451,90 @@ class TemplateSendTests(TemplateTestCase):
             root.setLevel(previous)
         self.assertNotIn(TOKEN_A, "\n".join(captured))
         self.assertNotIn(APP_SECRET, "\n".join(captured))
+
+
+# =========================
+# TENANT-WIDE LIST (GET /templates)
+# =========================
+
+ALL_TEMPLATES_URL = "/api/v1/templates"
+
+
+class ListAllTemplatesTests(TemplateTestCase):
+    """GET /templates: tenant-wide listing, filters, isolation, RBAC."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.sync()                                   # tenant A -> wa_a
+        self.sync(self.wa_b, self.owner_b, self.tenant_b)  # tenant B -> wa_b
+
+    def get(self, query="", actor=None, tenant=None):
+        return self.client.get(
+            f"{ALL_TEMPLATES_URL}{query}",
+            headers=self.auth(actor or self.viewer, tenant or self.tenant_a),
+        )
+
+    def names(self, query="", actor=None, tenant=None):
+        response = self.get(query, actor, tenant)
+        self.assertEqual(response.status_code, 200, response.text)
+        return {item["name"] for item in response.json()["items"]}
+
+    def test_lists_all_active_tenant_templates(self):
+        response = self.get()
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["total"], 6)
+        self.assertEqual(self.names(), {
+            "order_update", "welcome", "promo_named", "invoice", "pending_tpl", "rejected_tpl",
+        })
+
+    def test_channel_filter(self):
+        self.assertEqual(len(self.get(f"?channel_id={self.wa_a.id}").json()["items"]), 6)
+        # A tenant-A channel with no templates returns an empty list.
+        self.assertEqual(self.get(f"?channel_id={self.ig_a.id}").json()["items"], [])
+
+    def test_status_filter(self):
+        self.assertEqual(self.names("?status=approved"), {"order_update", "welcome", "promo_named", "invoice"})
+        self.assertEqual(self.names("?status=pending"), {"pending_tpl"})
+        self.assertEqual(self.names("?status=rejected"), {"rejected_tpl"})
+
+    def test_category_filter(self):
+        self.assertEqual(len(self.get("?category=utility").json()["items"]), 6)
+        self.assertEqual(self.get("?category=marketing").json()["items"], [])
+
+    def test_language_filter(self):
+        self.assertEqual(self.names("?language=en_US"), {"order_update"})
+        self.assertEqual(
+            self.names("?language=en"),
+            {"welcome", "promo_named", "invoice", "pending_tpl", "rejected_tpl"},
+        )
+
+    def test_search_by_name(self):
+        self.assertEqual(self.names("?search=order"), {"order_update"})
+        self.assertEqual(self.names("?search=NOMATCH"), set())
+
+    def test_pagination(self):
+        page1 = self.get("?page=1&page_size=4").json()
+        page2 = self.get("?page=2&page_size=4").json()
+        self.assertEqual((page1["total"], len(page1["items"])), (6, 4))
+        self.assertEqual((page2["total"], len(page2["items"])), (6, 2))
+        ids = [i["id"] for i in page1["items"] + page2["items"]]
+        self.assertEqual(len(set(ids)), 6)
+        for q in ("?page=0", "?page_size=0", "?page_size=101", "?status=bad!", "?language=english-us"):
+            with self.subTest(q=q):
+                self.assertEqual(self.get(q).status_code, 422)
+
+    def test_tenant_isolation(self):
+        # Tenant A never sees tenant B's templates, even filtering by B's channel.
+        self.assertNotIn("B only", self.get().text)
+        self.assertEqual(self.get(f"?channel_id={self.wa_b.id}").json()["items"], [])
+        # Tenant B sees only its own.
+        b_names = self.names(actor=self.owner_b, tenant=self.tenant_b)
+        self.assertEqual(b_names, {"order_update"})
+
+    def test_rbac_and_no_secrets(self):
+        self.assertEqual(self.client.get(ALL_TEMPLATES_URL, headers=bearer("bad.jwt")).status_code, 401)
+        response = self.get()
+        self.assertNotIn(TOKEN_A, response.text)
+        self.assertNotIn(TOKEN_B, response.text)
+        self.assertNotIn("access_token", response.text)

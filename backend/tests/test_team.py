@@ -796,3 +796,56 @@ class SecurityTests(TeamTestCase):
         # Owner of A using a token claiming tenant B.
         response = self.invite(self.owner, "into-b@example.com", tenant=self.tenant_b)
         self.assertEqual(response.status_code, 403)
+
+
+ROLES_URL = "/api/v1/roles"
+
+
+class RolesEndpointTests(TeamTestCase):
+    """GET /roles: assignable flags, RBAC, tenant scoping, no secrets."""
+
+    def roles(self, actor, tenant=None):
+        response = self.client.get(ROLES_URL, headers=bearer(self.token_for(actor, tenant or self.tenant_a)))
+        self.assertEqual(response.status_code, 200, response.text)
+        return {item["name"]: item for item in response.json()}
+
+    def test_lists_all_active_roles_with_fields(self):
+        roles = self.roles(self.owner)
+        self.assertEqual(
+            set(roles),
+            {"OWNER", "ADMIN", "MANAGER", "AGENT", "VIEWER", "DEVELOPER"},
+        )
+        for item in roles.values():
+            self.assertEqual(set(item), {"id", "name", "description", "assignable"})
+
+    def test_owner_can_assign_every_role(self):
+        roles = self.roles(self.owner)
+        self.assertTrue(all(item["assignable"] for item in roles.values()))
+
+    def test_non_owner_cannot_assign_owner(self):
+        for actor in (self.admin, self.manager):
+            with self.subTest(actor=actor.email):
+                roles = self.roles(actor)
+                self.assertFalse(roles["OWNER"]["assignable"])
+
+    def test_manager_cannot_assign_above_itself(self):
+        roles = self.roles(self.manager)
+        self.assertTrue(roles["MANAGER"]["assignable"])
+        self.assertTrue(roles["AGENT"]["assignable"])
+        self.assertFalse(roles["ADMIN"]["assignable"])
+
+    def test_read_only_roles_can_view_roles(self):
+        # user:read is granted to every role; viewers can see role names.
+        for actor in (self.viewer, self.developer, self.agent):
+            with self.subTest(actor=actor.email):
+                self.assertEqual(self.client.get(
+                    ROLES_URL, headers=bearer(self.token_for(actor, self.tenant_a)),
+                ).status_code, 200)
+
+    def test_requires_authentication(self):
+        self.assertEqual(self.client.get(ROLES_URL).status_code, 401)
+
+    def test_no_permission_names_or_secrets_leaked(self):
+        response = self.client.get(ROLES_URL, headers=bearer(self.token_for(self.owner, self.tenant_a)))
+        for needle in ("permission", "user:read", "token", "password", "hash"):
+            self.assertNotIn(needle, response.text.lower())

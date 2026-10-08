@@ -21,7 +21,7 @@ from app.core.config import settings
 from app.integrations.meta.graph_client import is_meta_configured
 from app.integrations.meta.webhooks import verify_signature, verify_subscription
 from app.schemas.channel import ChannelConnectionResponse
-from app.schemas.whatsapp import WhatsAppConnectRequest
+from app.schemas.whatsapp import WhatsAppConnectionCheck, WhatsAppConnectRequest
 from app.services import whatsapp_service
 from app.services.channel_service import (
     ChannelAlreadyExistsError,
@@ -98,6 +98,26 @@ def connect_whatsapp(
     with handle_service_errors():
         return whatsapp_service.connect_whatsapp_channel(
             db, tenant.id, channel_id, data,
+        )
+
+
+# =========================
+# TEST CONNECTION (read-only health check)
+# =========================
+
+@router.post(
+    "/channels/{channel_id}/whatsapp/test",
+    response_model=WhatsAppConnectionCheck,
+    dependencies=[Depends(require_permission("channel:update"))],
+)
+def test_whatsapp_connection(
+    channel_id: uuid.UUID,
+    tenant: CurrentTenant,
+    db: DbSession,
+):
+    with handle_service_errors():
+        return whatsapp_service.check_whatsapp_channel(
+            db, tenant.id, channel_id,
         )
 
 

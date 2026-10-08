@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
@@ -24,3 +26,20 @@ class WhatsAppConnectRequest(BaseModel):
     )
 
     model_config = ConfigDict(extra="forbid")
+
+
+class WhatsAppConnectionCheck(BaseModel):
+    """
+    Result of a read-only connection health check. Carries only safe,
+    non-secret diagnostics; tokens are never included.
+    """
+
+    healthy: bool
+    detail: str
+    webhook_subscribed: bool | None = None
+    display_phone_number: str | None = None
+    verified_name: str | None = None
+    quality_rating: str | None = None
+    last_event_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
