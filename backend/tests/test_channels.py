@@ -687,22 +687,15 @@ class ProviderTests(ChannelTestCase):
                 self.assertEqual(provider.channel_type, channel_type)
                 self.assertEqual(get_provider(channel_type.value), provider)
 
-    def test_unimplemented_providers_never_fake_success(self):
-        # WhatsApp is implemented; see tests/test_whatsapp.py.
-        credentials = ProviderCredentials(access_token="secret-access")
-        for channel_type in (ChannelType.INSTAGRAM, ChannelType.FACEBOOK):
+    def test_no_provider_is_an_unimplemented_stub(self):
+        # All four channel types are implemented now (WhatsApp, Facebook,
+        # Instagram and Web Chat); no provider may silently fake success via
+        # the UnimplementedChannelProvider placeholder.
+        from app.integrations.base import UnimplementedChannelProvider
+        for channel_type in ChannelType:
             provider = get_provider(channel_type)
-            calls = [
-                lambda: provider.connect(self.wa_a, credentials),
-                lambda: provider.disconnect(self.wa_a, credentials),
-                lambda: provider.refresh_token(self.wa_a, credentials),
-                lambda: provider.validate_credentials(credentials),
-                lambda: provider.get_account_info(self.wa_a, credentials),
-            ]
-            for call in calls:
-                with self.subTest(channel_type=channel_type):
-                    with self.assertRaises(ProviderNotImplementedError):
-                        call()
+            with self.subTest(channel_type=channel_type):
+                self.assertNotIsInstance(provider, UnimplementedChannelProvider)
 
     def test_credentials_repr_hides_tokens(self):
         credentials = ProviderCredentials(access_token="secret-access", refresh_token="secret-refresh")

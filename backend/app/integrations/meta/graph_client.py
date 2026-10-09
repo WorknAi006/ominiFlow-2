@@ -215,6 +215,51 @@ class MetaGraphClient:
             secrets=(code,),
         )
 
+    def oauth_exchange_code(self, code: str, redirect_uri: str) -> dict[str, Any]:
+        """
+        Exchange a Facebook Login authorization code (from the OAuth dialog)
+        for a user access token. redirect_uri must match the one used to
+        start the dialog. The app secret is sent as a query parameter, never
+        from the browser.
+        """
+        return self.request(
+            "GET",
+            "oauth/access_token",
+            params={
+                "client_id": self.app_id,
+                "client_secret": self._app_secret,
+                "redirect_uri": redirect_uri,
+                "code": code,
+            },
+            with_proof=False,
+            secrets=(code,),
+        )
+
+    def long_lived_user_token(self, user_token: str) -> dict[str, Any]:
+        """Exchange a short-lived user token for a long-lived one."""
+        return self.request(
+            "GET",
+            "oauth/access_token",
+            params={
+                "grant_type": "fb_exchange_token",
+                "client_id": self.app_id,
+                "client_secret": self._app_secret,
+                "fb_exchange_token": user_token,
+            },
+            with_proof=False,
+            secrets=(user_token,),
+        )
+
+    def list_managed_pages(self, user_token: str, fields: str) -> dict[str, Any]:
+        """List the Pages a user manages (GET /me/accounts), with the given
+        fields (e.g. id,name,access_token,instagram_business_account{...})."""
+        return self.request(
+            "GET",
+            "me/accounts",
+            access_token=user_token,
+            params={"fields": fields, "limit": 100},
+        )
+
     def download(
         self,
         url: str,

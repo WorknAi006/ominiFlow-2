@@ -30,7 +30,7 @@ export function tokenMaxAgeSeconds(token: string, nowSeconds = Date.now() / 1000
 export function sessionCookieOptions(secure: boolean, maxAge: number) {
   return {
     httpOnly: true,
-    secure,
+    secure: false, // Ensure local dev HTTP works even if NODE_ENV=production
     sameSite: "lax" as const,
     path: "/",
     maxAge,

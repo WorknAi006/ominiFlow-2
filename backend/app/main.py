@@ -9,13 +9,23 @@ from app.api.tenants import router as tenants_router
 from app.api.users import router as users_router
 from app.api.roles import router as roles_router
 from app.api.whatsapp import router as whatsapp_router
+from app.api.facebook import router as facebook_router
+from app.api.instagram import router as instagram_router
+from app.api.meta_oauth import router as meta_oauth_router
 from app.api.web_chat import router as web_chat_router
 from app.api.contacts import router as contacts_router
+from app.api.tags import router as tags_router
+from app.api.custom_fields import router as custom_fields_router
 from app.api.conversations import router as conversations_router
 from app.api.messages import router as messages_router
 from app.api.templates import router as templates_router
 from app.api.realtime import router as realtime_router
 from app.api.automations import router as automations_router
+from app.api.keywords import router as keywords_router
+from app.api.whatsapp_forms import router as whatsapp_forms_router
+from app.api.ai_config import router as ai_config_router
+from app.api.analytics import router as analytics_router
+from app.api.ai_config import router as ai_config_router
 from app.core.config import settings
 
 
@@ -97,12 +107,37 @@ app.include_router(
 )
 
 app.include_router(
+    facebook_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    instagram_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    meta_oauth_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
     web_chat_router,
     prefix="/api/v1",
 )
 
 app.include_router(
     contacts_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    tags_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    custom_fields_router,
     prefix="/api/v1",
 )
 
@@ -131,6 +166,26 @@ app.include_router(
     prefix="/api/v1",
 )
 
+app.include_router(
+    keywords_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    whatsapp_forms_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    ai_config_router,
+    prefix="/api/v1",
+    tags=["AI Configuration"],
+)
+
+app.include_router(
+    analytics_router,
+    prefix="/api/v1",
+)
 
 # =========================
 # HEALTH CHECK
@@ -161,3 +216,4 @@ async def database_health():
         "status": "ok",
         "database": database_name,
     }
+# trigger reload

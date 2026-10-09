@@ -6,11 +6,24 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.phone import InvalidPhoneNumberError, normalize_phone, to_whatsapp_id
-from app.models import ChannelType, Contact, ContactIdentity
+from app.models import (
+    ChannelType,
+    Contact,
+    ContactFieldValue,
+    ContactIdentity,
+    ContactTag,
+    CustomFieldDefinition,
+    Tag,
+)
 from app.schemas.contact import (
     ContactCreate,
+    ContactFieldValueOut,
+    ContactIdentitySummary,
+    ContactImportResult,
+    ContactImportRow,
     ContactListResponse,
     ContactResponse,
+    ContactTagSummary,
     ContactUpdate,
 )
 from app.services.query_utils import like_pattern, page_offset
@@ -68,6 +81,84 @@ def to_contact_response(contact: Contact) -> ContactResponse:
         created_at=contact.created_at,
         updated_at=contact.updated_at,
     )
+
+
+# =========================
+# ENRICHMENT (identities / tags) — batched, no N+1
+# =========================
+
+def _identities_for(db: Session, tenant_id: uuid.UUID, contact_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[ContactIdentitySummary]]:
+    if not contact_ids:
+        return {}
+    rows = (
+        db.query(ContactIdentity)
+        .filter(ContactIdentity.tenant_id == tenant_id, ContactIdentity.contact_id.in_(contact_ids))
+        .order_by(ContactIdentity.channel_type.asc())
+        .all()
+    )
+    out: dict[uuid.UUID, list[ContactIdentitySummary]] = {}
+    for row in rows:
+        out.setdefault(row.contact_id, []).append(
+            ContactIdentitySummary(
+                channel_type=row.channel_type, external_id=row.external_id, display_name=row.display_name,
+            )
+        )
+    return out
+
+
+def _tags_for(db: Session, tenant_id: uuid.UUID, contact_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[ContactTagSummary]]:
+    if not contact_ids:
+        return {}
+    rows = (
+        db.query(ContactTag.contact_id, Tag)
+        .join(Tag, (Tag.id == ContactTag.tag_id) & (Tag.tenant_id == ContactTag.tenant_id))
+        .filter(ContactTag.tenant_id == tenant_id, ContactTag.contact_id.in_(contact_ids))
+        .order_by(Tag.name.asc())
+        .all()
+    )
+    out: dict[uuid.UUID, list[ContactTagSummary]] = {}
+    for contact_id, tag in rows:
+        out.setdefault(contact_id, []).append(
+            ContactTagSummary(id=tag.id, name=tag.name, color=tag.color)
+        )
+    return out
+
+
+def _field_values_for(db: Session, tenant_id: uuid.UUID, contact_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[ContactFieldValueOut]]:
+    if not contact_ids:
+        return {}
+    rows = (
+        db.query(ContactFieldValue, CustomFieldDefinition)
+        .join(
+            CustomFieldDefinition,
+            (CustomFieldDefinition.id == ContactFieldValue.field_id)
+            & (CustomFieldDefinition.tenant_id == ContactFieldValue.tenant_id),
+        )
+        .filter(ContactFieldValue.tenant_id == tenant_id, ContactFieldValue.contact_id.in_(contact_ids))
+        .order_by(CustomFieldDefinition.label.asc())
+        .all()
+    )
+    out: dict[uuid.UUID, list[ContactFieldValueOut]] = {}
+    for value_row, field in rows:
+        out.setdefault(value_row.contact_id, []).append(
+            ContactFieldValueOut(
+                field_id=field.id, key=field.key, label=field.label,
+                field_type=field.field_type, value=value_row.value,
+            )
+        )
+    return out
+
+
+def _enrich(contacts: list[Contact], identities, tags, field_values=None) -> list[ContactResponse]:
+    field_values = field_values or {}
+    result = []
+    for contact in contacts:
+        response = to_contact_response(contact)
+        response.identities = identities.get(contact.id, [])
+        response.tags = tags.get(contact.id, [])
+        response.field_values = field_values.get(contact.id, [])
+        result.append(response)
+    return result
 
 
 def _normalize(phone: str) -> str:
@@ -131,19 +222,33 @@ def get_contact(
     tenant_id: uuid.UUID,
     contact_id: uuid.UUID,
 ) -> ContactResponse:
-    return to_contact_response(get_contact_model(db, tenant_id, contact_id))
+    contact = get_contact_model(db, tenant_id, contact_id)
+    identities = _identities_for(db, tenant_id, [contact.id])
+    tags = _tags_for(db, tenant_id, [contact.id])
+    field_values = _field_values_for(db, tenant_id, [contact.id])
+    return _enrich([contact], identities, tags, field_values)[0]
 
 
-def list_contacts(
+def _filtered_query(
     db: Session,
     tenant_id: uuid.UUID,
-    page: int,
-    page_size: int,
     search: str | None = None,
     phone: str | None = None,
-) -> ContactListResponse:
-
+    tag_id: uuid.UUID | None = None,
+    channel_type: str | None = None,
+    source: str | None = None,
+):
     query = db.query(Contact).filter(Contact.tenant_id == tenant_id)
+
+    # Source is derived: a contact with a channel identity arrived through the
+    # Inbox; one without is manually added. (No external CRM sources exist.)
+    if source in ("inbox", "manual"):
+        has_identity = (
+            db.query(ContactIdentity.id)
+            .filter(ContactIdentity.tenant_id == tenant_id, ContactIdentity.contact_id == Contact.id)
+            .exists()
+        )
+        query = query.filter(has_identity if source == "inbox" else ~has_identity)
 
     if phone:
         query = query.filter(Contact.normalized_phone_number == _normalize(phone))
@@ -165,6 +270,45 @@ def list_contacts(
             ))
         )
 
+    if tag_id is not None:
+        query = query.filter(
+            db.query(ContactTag.id)
+            .filter(
+                ContactTag.tenant_id == tenant_id,
+                ContactTag.contact_id == Contact.id,
+                ContactTag.tag_id == tag_id,
+            )
+            .exists()
+        )
+
+    if channel_type:
+        query = query.filter(
+            db.query(ContactIdentity.id)
+            .filter(
+                ContactIdentity.tenant_id == tenant_id,
+                ContactIdentity.contact_id == Contact.id,
+                ContactIdentity.channel_type == channel_type,
+            )
+            .exists()
+        )
+
+    return query
+
+
+def list_contacts(
+    db: Session,
+    tenant_id: uuid.UUID,
+    page: int,
+    page_size: int,
+    search: str | None = None,
+    phone: str | None = None,
+    tag_id: uuid.UUID | None = None,
+    channel_type: str | None = None,
+    source: str | None = None,
+) -> ContactListResponse:
+
+    query = _filtered_query(db, tenant_id, search, phone, tag_id, channel_type, source)
+
     total = query.count()
 
     contacts = (
@@ -174,8 +318,13 @@ def list_contacts(
         .all()
     )
 
+    ids = [contact.id for contact in contacts]
+    identities = _identities_for(db, tenant_id, ids)
+    tags = _tags_for(db, tenant_id, ids)
+    field_values = _field_values_for(db, tenant_id, ids)
+
     return ContactListResponse(
-        items=[to_contact_response(contact) for contact in contacts],
+        items=_enrich(contacts, identities, tags, field_values),
         total=total,
         page=page,
         page_size=page_size,
@@ -457,3 +606,187 @@ def get_or_create_by_identity(
         return winner
 
     return contact
+
+
+# =========================
+# DELETE (tenant-scoped; dependents cascade at the DB level)
+# =========================
+
+DELETE_ALL_CONFIRM = "DELETE ALL"
+
+
+def filter_owned_contact_ids(
+    db: Session, tenant_id: uuid.UUID, contact_ids: list[uuid.UUID],
+) -> list[uuid.UUID]:
+    """Return only the ids that belong to this tenant (drops foreign/unknown)."""
+    unique = list(dict.fromkeys(contact_ids))
+    if not unique:
+        return []
+    rows = (
+        db.query(Contact.id)
+        .filter(Contact.tenant_id == tenant_id, Contact.id.in_(unique))
+        .all()
+    )
+    return [row[0] for row in rows]
+
+
+def delete_contact(db: Session, tenant_id: uuid.UUID, contact_id: uuid.UUID) -> None:
+    """
+    Delete one contact in the current tenant. The DB cascades its identities,
+    tags, conversations, messages and automation executions (all contact_id
+    FKs are ON DELETE CASCADE). Other tenants are never touched.
+    """
+    contact = get_contact_model(db, tenant_id, contact_id, for_update=True)
+    db.delete(contact)
+    _commit(db)
+
+
+def bulk_delete_contacts(
+    db: Session, tenant_id: uuid.UUID, contact_ids: list[uuid.UUID],
+) -> int:
+    """Delete several contacts in this tenant; returns the number removed."""
+    owned = filter_owned_contact_ids(db, tenant_id, contact_ids)
+    if not owned:
+        return 0
+    deleted = (
+        db.query(Contact)
+        .filter(Contact.tenant_id == tenant_id, Contact.id.in_(owned))
+        .delete(synchronize_session=False)
+    )
+    _commit(db)
+    return int(deleted)
+
+
+def delete_all_contacts(db: Session, tenant_id: uuid.UUID) -> int:
+    """Delete every contact in this tenant (high-risk; caller confirms)."""
+    deleted = (
+        db.query(Contact)
+        .filter(Contact.tenant_id == tenant_id)
+        .delete(synchronize_session=False)
+    )
+    _commit(db)
+    return int(deleted)
+
+
+# =========================
+# EXPORT (streamed, tenant-scoped, honours search/filters)
+# =========================
+
+EXPORT_COLUMNS = [
+    "name", "first_name", "last_name", "phone_number", "email",
+    "channels", "tags", "is_blocked", "created_at",
+]
+
+
+def iter_export_rows(
+    db: Session,
+    tenant_id: uuid.UUID,
+    search: str | None = None,
+    tag_id: uuid.UUID | None = None,
+    channel_type: str | None = None,
+    chunk_size: int = 500,
+):
+    """
+    Yield one dict per contact for CSV export, paginating server-side so a
+    large tenant never loads entirely into memory. Only this tenant's
+    contacts are ever returned.
+    """
+    base = _filtered_query(db, tenant_id, search, None, tag_id, channel_type).order_by(
+        Contact.created_at.desc(), Contact.id.asc(),
+    )
+    offset = 0
+    while True:
+        chunk = base.offset(offset).limit(chunk_size).all()
+        if not chunk:
+            break
+        ids = [c.id for c in chunk]
+        identities = _identities_for(db, tenant_id, ids)
+        tags = _tags_for(db, tenant_id, ids)
+        for contact in chunk:
+            channels = sorted({i.channel_type for i in identities.get(contact.id, [])})
+            tag_names = [t.name for t in tags.get(contact.id, [])]
+            yield {
+                "name": contact_name(contact) or "",
+                "first_name": contact.first_name or "",
+                "last_name": contact.last_name or "",
+                "phone_number": contact.phone_number or contact.normalized_phone_number or "",
+                "email": contact.email or "",
+                "channels": ", ".join(channels),
+                "tags": ", ".join(tag_names),
+                "is_blocked": "yes" if contact.is_blocked else "no",
+                "created_at": contact.created_at.isoformat() if contact.created_at else "",
+            }
+        if len(chunk) < chunk_size:
+            break
+        offset += chunk_size
+
+
+# =========================
+# IMPORT (CSV rows; tenant-scoped, deduped by phone)
+# =========================
+
+def import_contacts(db: Session, tenant_id: uuid.UUID, rows: list[ContactImportRow]) -> ContactImportResult:
+    """
+    Create contacts from parsed CSV rows. Rows without a phone or email are
+    skipped; invalid phones are reported as errors; duplicates (by normalized
+    phone, in the DB or within the batch) are skipped. Never touches another
+    tenant's data.
+    """
+    existing_phones = {
+        row[0] for row in
+        db.query(Contact.normalized_phone_number)
+        .filter(Contact.tenant_id == tenant_id, Contact.normalized_phone_number.isnot(None))
+        .all()
+    }
+    seen = set(existing_phones)
+    imported, skipped, errors = 0, 0, []
+
+    for index, row in enumerate(rows, start=1):
+        phone = (row.phone_number or "").strip() or None
+        email = (row.email or "").strip().lower() or None
+        if not phone and not email:
+            skipped += 1
+            continue
+
+        normalized = None
+        if phone:
+            try:
+                normalized = normalize_phone(phone)
+            except InvalidPhoneNumberError:
+                errors.append(f"Row {index}: invalid phone number.")
+                continue
+            if normalized in seen:
+                skipped += 1
+                continue
+
+        contact = Contact(
+            tenant_id=tenant_id,
+            phone_number=phone,
+            normalized_phone_number=normalized,
+            email=email,
+            first_name=row.first_name or None,
+            last_name=row.last_name or None,
+            display_name=row.display_name or None,
+            is_blocked=False,
+        )
+        db.add(contact)
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            # Re-seed the dedupe set once and skip this row.
+            skipped += 1
+            seen = {
+                r[0] for r in
+                db.query(Contact.normalized_phone_number)
+                .filter(Contact.tenant_id == tenant_id, Contact.normalized_phone_number.isnot(None))
+                .all()
+            }
+            continue
+
+        if normalized:
+            seen.add(normalized)
+        imported += 1
+
+    _commit(db)
+    return ContactImportResult(imported=imported, skipped=skipped, errors=errors[:50])

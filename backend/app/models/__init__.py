@@ -36,6 +36,15 @@ from app.models.automation import (
     AutomationExecutionStatus, AutomationNode, AutomationNodeType, AutomationStatus, AutomationTrigger,
     AutomationWorkerHeartbeat,
 )
+from app.models.oauth_state import OAuthState, OAuthStatus
+from app.models.tag import ContactTag, DEFAULT_TAG_COLOR, Tag
+from app.models.custom_field import (
+    ContactFieldValue,
+    CustomFieldDefinition,
+    CustomFieldType,
+)
+from app.models.keyword import Keyword
+from app.models.tenant_ai_config import TenantAiConfig
 
 
 __all__ = [
@@ -69,4 +78,9 @@ __all__ = [
     "Automation", "AutomationEdge", "AutomationNode", "AutomationExecution", "AutomationExecutionLog",
     "AutomationStatus", "AutomationTrigger", "AutomationNodeType", "AutomationExecutionStatus",
     "AutomationWorkerHeartbeat",
+    "OAuthState", "OAuthStatus",
+    "Tag", "ContactTag", "DEFAULT_TAG_COLOR",
+    "CustomFieldDefinition", "ContactFieldValue", "CustomFieldType",
+    "Keyword",
+    "TenantAiConfig",
 ]

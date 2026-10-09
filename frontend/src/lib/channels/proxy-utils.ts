@@ -110,6 +110,40 @@ function buildConnectBody(body: unknown): Record<string, unknown> | null {
   return { phone_number_id, waba_id, access_token };
 }
 
+function buildFacebookConnectBody(body: unknown): Record<string, unknown> | null {
+  if (!isRecord(body)) return null;
+  const allowed = new Set(["page_id", "access_token"]);
+  for (const key of Object.keys(body)) if (!allowed.has(key)) return null;
+
+  const { page_id, access_token } = body;
+  if (typeof page_id !== "string" || !META_ID_PATTERN.test(page_id)) return null;
+  if (typeof access_token !== "string" || access_token.length < 1 || access_token.length > 4096) return null;
+  return { page_id, access_token };
+}
+
+function buildInstagramConnectBody(body: unknown): Record<string, unknown> | null {
+  if (!isRecord(body)) return null;
+  const allowed = new Set(["instagram_id", "page_id", "access_token"]);
+  for (const key of Object.keys(body)) if (!allowed.has(key)) return null;
+
+  const { instagram_id, page_id, access_token } = body;
+  if (typeof instagram_id !== "string" || !META_ID_PATTERN.test(instagram_id)) return null;
+  if (typeof page_id !== "string" || !META_ID_PATTERN.test(page_id)) return null;
+  if (typeof access_token !== "string" || access_token.length < 1 || access_token.length > 4096) return null;
+  return { instagram_id, page_id, access_token };
+}
+
+function buildOAuthSelectBody(body: unknown): Record<string, unknown> | null {
+  if (!isRecord(body)) return null;
+  const allowed = new Set(["token", "external_account_id"]);
+  for (const key of Object.keys(body)) if (!allowed.has(key)) return null;
+
+  const { token, external_account_id } = body;
+  if (typeof token !== "string" || token.length < 10 || token.length > 128) return null;
+  if (typeof external_account_id !== "string" || !EXTERNAL_ID_PATTERN.test(external_account_id)) return null;
+  return { token, external_account_id };
+}
+
 export function buildChannelProxyTarget(
   method: string,
   segments: string[],
@@ -144,6 +178,29 @@ export function buildChannelProxyTarget(
   }
 
   const id = segments[0];
+
+  // OAuth self-service flow
+  if (id === "oauth") {
+    if (segments.length === 3 && segments[2] === "start" && method === "POST" && params.size === 0) {
+      const provider = segments[1];
+      if (provider !== "facebook" && provider !== "instagram") return null;
+      return { backendPath: `/channels/oauth/${provider}/start`, method: "POST", query: empty };
+    }
+    if (segments.length === 2 && segments[1] === "assets" && method === "GET") {
+      const query = new URLSearchParams();
+      const token = params.get("token");
+      if (!token || token.length < 10 || token.length > 128) return null;
+      query.set("token", token);
+      return { backendPath: `/channels/oauth/assets`, method: "GET", query };
+    }
+    if (segments.length === 2 && segments[1] === "select" && method === "POST" && params.size === 0) {
+      const select = buildOAuthSelectBody(body);
+      if (!select) return null;
+      return { backendPath: `/channels/oauth/select`, method: "POST", query: empty, body: select };
+    }
+    return null;
+  }
+
   if (!UUID_PATTERN.test(id)) return null;
 
   // Single channel: get / update / delete.
@@ -193,6 +250,30 @@ export function buildChannelProxyTarget(
     }
     if (segments[2] === "test" && method === "POST" && params.size === 0) {
       return { backendPath: `/channels/${id}/whatsapp/test`, method: "POST", query: empty };
+    }
+    return null;
+  }
+
+  if (segments.length === 3 && segments[1] === "facebook") {
+    if (segments[2] === "connect" && method === "POST" && params.size === 0) {
+      const connect = buildFacebookConnectBody(body);
+      if (!connect) return null;
+      return { backendPath: `/channels/${id}/facebook/connect`, method: "POST", query: empty, body: connect };
+    }
+    if (segments[2] === "test" && method === "POST" && params.size === 0) {
+      return { backendPath: `/channels/${id}/facebook/test`, method: "POST", query: empty };
+    }
+    return null;
+  }
+
+  if (segments.length === 3 && segments[1] === "instagram") {
+    if (segments[2] === "connect" && method === "POST" && params.size === 0) {
+      const connect = buildInstagramConnectBody(body);
+      if (!connect) return null;
+      return { backendPath: `/channels/${id}/instagram/connect`, method: "POST", query: empty, body: connect };
+    }
+    if (segments[2] === "test" && method === "POST" && params.size === 0) {
+      return { backendPath: `/channels/${id}/instagram/test`, method: "POST", query: empty };
     }
     return null;
   }

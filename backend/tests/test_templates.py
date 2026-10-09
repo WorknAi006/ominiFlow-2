@@ -260,7 +260,10 @@ class TemplateSendTests(TemplateTestCase):
     def send(self, body, conversation=None, actor=None):
         return self.client.post(
             f"/api/v1/conversations/{(conversation or self.conversation).id}/messages",
-            headers=self.auth(actor or self.agent, self.tenant_a),
+            headers={
+                **self.auth(actor or self.agent, self.tenant_a),
+                "Idempotency-Key": str(uuid.uuid4()),
+            },
             json=body,
         )
 

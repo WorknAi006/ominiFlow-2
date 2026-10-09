@@ -18,7 +18,7 @@ from app.models import (
 )
 from app.schemas.message import TextMessageCreate
 from app.services import contact_service, outbound_message_service
-from app.services.outbound_message_service import UnsupportedChannelError
+from app.services.outbound_message_service import RecipientUnavailableError
 from app.services.whatsapp_event_processor import ProcessOutcome, process_event
 from tests.inbox_fixtures import CUSTOMER, CUSTOMER_E164, InboxTestCase
 
@@ -161,10 +161,12 @@ class GenericOutboundSendTests(InboxTestCase):
         self.assertEqual(len(self.send_api.requests), 1)
 
     # Test 7
-    def test_non_whatsapp_stub_provider_fails_cleanly(self):
-        with self.assertRaises(UnsupportedChannelError):
-            self.send(self.ig_conversation.id, "Should not send on a stub channel.")
-        # Failed before any provider HTTP call.
+    def test_send_on_channel_without_contact_identity_fails_cleanly(self):
+        # Instagram is a real provider now, but this contact has no Instagram
+        # identity, so the recipient cannot be resolved. It fails before any
+        # provider HTTP call rather than guessing an address.
+        with self.assertRaises(RecipientUnavailableError):
+            self.send(self.ig_conversation.id, "No Instagram identity for this contact.")
         self.assertEqual(self.send_api.requests, [])
 
 

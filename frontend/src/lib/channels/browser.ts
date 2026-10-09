@@ -29,6 +29,34 @@ export interface WhatsAppConnectInput {
   access_token: string;
 }
 
+export interface FacebookConnectInput {
+  page_id: string;
+  access_token: string;
+}
+
+export interface FacebookConnectionCheck {
+  healthy: boolean;
+  detail: string;
+  webhook_subscribed: boolean | null;
+  page_name: string | null;
+  last_event_at: string | null;
+}
+
+export interface InstagramConnectInput {
+  instagram_id: string;
+  page_id: string;
+  access_token: string;
+}
+
+export interface InstagramConnectionCheck {
+  healthy: boolean;
+  detail: string;
+  webhook_subscribed: boolean | null;
+  username: string | null;
+  account_id: string | null;
+  last_event_at: string | null;
+}
+
 export class ChannelApiError extends Error {
   constructor(public readonly status: number, message: string) {
     super(message);
@@ -121,6 +149,59 @@ export function connectWhatsApp(channelId: string, input: WhatsAppConnectInput) 
 
 export function testWhatsAppConnection(channelId: string) {
   return request<ConnectionCheck>(`/${encodeURIComponent(channelId)}/whatsapp/test`, { method: "POST" });
+}
+
+export function connectFacebook(channelId: string, input: FacebookConnectInput) {
+  return request<ChannelConnection>(`/${encodeURIComponent(channelId)}/facebook/connect`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+export function testFacebookConnection(channelId: string) {
+  return request<FacebookConnectionCheck>(`/${encodeURIComponent(channelId)}/facebook/test`, { method: "POST" });
+}
+
+export function connectInstagram(channelId: string, input: InstagramConnectInput) {
+  return request<ChannelConnection>(`/${encodeURIComponent(channelId)}/instagram/connect`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+export function testInstagramConnection(channelId: string) {
+  return request<InstagramConnectionCheck>(`/${encodeURIComponent(channelId)}/instagram/test`, { method: "POST" });
+}
+
+// ----- Meta OAuth self-service onboarding (Facebook / Instagram) -----
+
+export type MetaOAuthProvider = "facebook" | "instagram";
+
+export interface OAuthAssetItem {
+  external_account_id: string;
+  name: string;
+  page_id: string | null;
+  page_name: string | null;
+}
+
+export interface OAuthAssets {
+  provider: string;
+  assets: OAuthAssetItem[];
+}
+
+export function startMetaOAuth(provider: MetaOAuthProvider) {
+  return request<{ authorization_url: string }>(`/oauth/${provider}/start`, { method: "POST" });
+}
+
+export function getMetaOAuthAssets(token: string) {
+  return request<OAuthAssets>(`/oauth/assets?token=${encodeURIComponent(token)}`);
+}
+
+export function completeMetaOAuth(token: string, externalAccountId: string) {
+  return request<ChannelConnection>("/oauth/select", {
+    method: "POST",
+    body: { token, external_account_id: externalAccountId },
+  });
 }
 
 export function connectWebChat(channelId: string) {

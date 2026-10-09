@@ -1,11 +1,14 @@
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Boolean, ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
+
+if TYPE_CHECKING:
+    from app.models.contact_identity import ContactIdentity
 
 
 class Contact(Base, UUIDMixin, TimestampMixin):
@@ -82,6 +85,17 @@ class Contact(Base, UUIDMixin, TimestampMixin):
         default=False,
         server_default="false",
         nullable=False,
+    )
+
+    # Per-channel identities (WhatsApp wa_id, Facebook PSID, etc.). Read-only
+    # here: identities are written through contact_service with an idempotent
+    # upsert. Lets a provider resolve its own recipient address (e.g. the
+    # Facebook PSID) from a contact without the core services needing to know
+    # any channel-specific addressing.
+    identities: Mapped[list["ContactIdentity"]] = relationship(
+        "ContactIdentity",
+        viewonly=True,
+        lazy="select",
     )
 
     __table_args__ = (

@@ -26,6 +26,7 @@ from app.schemas.team import (
 from app.services import user_service
 from app.services.user_service import (
     AlreadyMemberError,
+    EmailDeliveryError,
     InvalidInvitationError,
     InvalidRoleError,
     InvitationAlreadyExistsError,
@@ -56,6 +57,7 @@ ERROR_STATUS_CODES: dict[type[TeamServiceError], int] = {
     LastOwnerError: status.HTTP_409_CONFLICT,
     InvalidInvitationError: status.HTTP_400_BAD_REQUEST,
     InvitationCredentialsError: status.HTTP_401_UNAUTHORIZED,
+    EmailDeliveryError: status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
 

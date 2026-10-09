@@ -72,4 +72,21 @@ describe("Channel proxy allowlist", () => {
     assert.equal(buildChannelProxyTarget("PATCH", [id], params(), {}), null);
     assert.equal(buildChannelProxyTarget("PATCH", [id], params(), { status: "connected" }), null);
   });
+
+  it("validates Facebook, Instagram and OAuth proxy targets", () => {
+    // Facebook
+    const fb = buildChannelProxyTarget("POST", [id, "facebook", "connect"], params(), { page_id: "100", access_token: "token" });
+    assert.equal(fb.backendPath, `/channels/${id}/facebook/connect`);
+    assert.equal(buildChannelProxyTarget("POST", [id, "facebook", "test"], params()).backendPath, `/channels/${id}/facebook/test`);
+
+    // Instagram
+    const ig = buildChannelProxyTarget("POST", [id, "instagram", "connect"], params(), { instagram_id: "100", page_id: "200", access_token: "token" });
+    assert.equal(ig.backendPath, `/channels/${id}/instagram/connect`);
+    assert.equal(buildChannelProxyTarget("POST", [id, "instagram", "test"], params()).backendPath, `/channels/${id}/instagram/test`);
+
+    // OAuth
+    assert.equal(buildChannelProxyTarget("POST", ["oauth", "facebook", "start"], params()).backendPath, "/channels/oauth/facebook/start");
+    assert.equal(buildChannelProxyTarget("GET", ["oauth", "assets"], params("token=1234567890abc")).backendPath, "/channels/oauth/assets");
+    assert.equal(buildChannelProxyTarget("POST", ["oauth", "select"], params(), { token: "1234567890abc", external_account_id: "100" }).backendPath, "/channels/oauth/select");
+  });
 });

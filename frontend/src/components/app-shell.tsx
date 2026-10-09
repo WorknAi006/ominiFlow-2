@@ -7,12 +7,19 @@ import { useState, type ReactNode } from "react";
 import type { AuthContext } from "@/lib/auth/session";
 
 const navigation = [
+  { label: "Analytics", href: "/analytics", mark: "A" },
   { label: "Dashboard", href: "/dashboard", mark: "D" },
   { label: "Inbox", href: "/inbox", mark: "I" },
   { label: "Contacts", href: "/contacts", mark: "C" },
   { label: "Channels", href: "/channels", mark: "↗" },
   { label: "Team", href: "/team", mark: "T" },
+  { label: "Keywords", href: "/keywords", mark: "K" },
+  { label: "WhatsApp Forms", href: "/whatsapp-forms", mark: "W" },
+  { label: "Postings", href: "/postings", mark: "P" },
+  { label: "E-commerce", href: "/e-commerce", mark: "E" },
   { label: "Automations", href: "/automations", mark: "A" },
+  { label: "Flow", href: "/flow", mark: "F" },
+  { label: "AI Configuration", href: "/ai-configuration", mark: "✨" },
   { label: "Templates", href: "/templates", mark: "▤" },
   { label: "Settings", href: "/settings", mark: "⚙" },
 ];
@@ -60,7 +67,7 @@ export function AppShell({ user, tenant, children }: AppShellProps) {
           <span className="workspace-slug">{tenant.slug}</span>
         </div>
 
-        <nav aria-label="Main navigation" className="mt-8 space-y-1">
+        <nav aria-label="Main navigation" className="sidebar-nav mt-8 space-y-1">
           <p className="nav-section-label">WORKSPACE</p>
           {navigation.map((item) => {
             const active = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));

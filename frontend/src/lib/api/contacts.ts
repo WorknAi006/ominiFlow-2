@@ -1,5 +1,17 @@
 import { apiRequest, type PaginatedResponse } from "./client";
 
+export interface ContactIdentitySummary {
+  channel_type: string;
+  external_id: string;
+  display_name: string | null;
+}
+
+export interface ContactTagSummary {
+  id: string;
+  name: string;
+  color: string;
+}
+
 export interface Contact {
   id: string;
   name: string | null;
@@ -14,6 +26,9 @@ export interface Contact {
   is_blocked: boolean;
   created_at: string;
   updated_at: string;
+  identities: ContactIdentitySummary[];
+  tags: ContactTagSummary[];
+  field_values?: Record<string, string | number | boolean | string[] | null>;
 }
 
 export interface ContactListParams {
@@ -21,6 +36,8 @@ export interface ContactListParams {
   page_size?: number;
   search?: string;
   phone?: string;
+  tag_id?: string;
+  channel_type?: string;
 }
 
 /** At least one of phone_number or email is required. */

@@ -19,6 +19,7 @@ RESPONSE_FIELDS = {
     "id", "name", "phone_number", "normalized_phone_number", "email",
     "first_name", "last_name", "display_name", "profile_name",
     "avatar_url", "is_blocked", "created_at", "updated_at",
+    "identities", "tags", "field_values",
 }
 
 FORBIDDEN = {"detail": "You do not have permission to perform this action."}

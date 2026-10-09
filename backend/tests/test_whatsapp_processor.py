@@ -580,9 +580,12 @@ class OutboundTests(ProcessorTestCase):
         channel.is_active = True
         self.db.commit()
 
+        # Instagram is a real provider now, but this contact has no Instagram
+        # identity, so the recipient cannot be resolved (409), still rejected
+        # before any provider call.
         ig_conversation = self.make_conversation(self.tenant_a, self.contact, self.ig_a)
         self.db.commit()
-        cases["wrong channel type"] = (self.send(conversation=ig_conversation), 422)
+        cases["channel without contact identity"] = (self.send(conversation=ig_conversation), 409)
 
         contact = self.reload(Contact, self.contact.id)
         contact.is_blocked = True

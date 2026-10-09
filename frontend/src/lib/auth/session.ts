@@ -52,6 +52,7 @@ async function authenticatedGet(path: string, token: string) {
     return await fetch(backendApiUrl(path), {
       headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
       cache: "no-store",
+      signal: AbortSignal.timeout(5000),
     });
   } catch {
     throw new AuthBackendUnavailableError();

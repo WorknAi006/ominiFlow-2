@@ -80,6 +80,20 @@ async function handle(request: NextRequest, context: RouteContext, method: Proxy
     return new NextResponse(null, { status: 204 });
   }
 
+  // CSV export streams through as text rather than JSON.
+  if (target.backendPath === "/contacts/export") {
+    const csv = await upstream.text();
+    return new NextResponse(csv, {
+      status: 200,
+      headers: {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": 'attachment; filename="contacts.csv"',
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+
   const payload = await parseJson(upstream);
   if (payload === null || typeof payload !== "object") {
     return NextResponse.json({ error: "The contacts service returned an invalid response." }, { status: 502 });
@@ -95,4 +109,7 @@ export function POST(request: NextRequest, context: RouteContext) {
 }
 export function PATCH(request: NextRequest, context: RouteContext) {
   return handle(request, context, "PATCH");
+}
+export function DELETE(request: NextRequest, context: RouteContext) {
+  return handle(request, context, "DELETE");
 }

@@ -56,6 +56,34 @@ describe("Contacts proxy allowlist", () => {
     assert.equal(target.query.get("contact_id"), id);
     assert.equal(buildContactProxyTarget("GET", [id, "conversations"], params("status=open")), null);
     assert.equal(buildContactProxyTarget("GET", ["not-a-uuid"], params()), null);
-    assert.equal(buildContactProxyTarget("DELETE", [id], params()), null);
+  });
+
+  it("allows delete, tags, bulk, export and all/delete with validated shapes", () => {
+    assert.equal(buildContactProxyTarget("DELETE", [id], params()).backendPath, `/contacts/${id}`);
+
+    const setTags = buildContactProxyTarget("POST", [id, "tags"], params(), { tag_ids: [id] });
+    assert.deepEqual(setTags.body.tag_ids, [id]);
+    assert.equal(buildContactProxyTarget("POST", [id, "tags"], params(), { tag_ids: ["bad"] }), null);
+
+    const bulk = buildContactProxyTarget("POST", ["bulk-delete"], params(), { contact_ids: [id] });
+    assert.deepEqual(bulk.body.contact_ids, [id]);
+    assert.equal(buildContactProxyTarget("POST", ["bulk-delete"], params(), { contact_ids: [] }), null);
+
+    const tagsBulk = buildContactProxyTarget("POST", ["tags"], params(), { contact_ids: [id], add_tag_ids: [id] });
+    assert.deepEqual(tagsBulk.body.add_tag_ids, [id]);
+
+    const all = buildContactProxyTarget("POST", ["all", "delete"], params(), { confirm: "DELETE ALL" });
+    assert.equal(all.body.confirm, "DELETE ALL");
+    assert.equal(buildContactProxyTarget("POST", ["all", "delete"], params(), { confirm: "x".repeat(21) }), null);
+
+    const exp = buildContactProxyTarget("GET", ["export"], params("search=al&tag_id=" + id + "&channel_type=whatsapp"));
+    assert.equal(exp.backendPath, "/contacts/export");
+    assert.equal(exp.query.get("tag_id"), id);
+    assert.equal(buildContactProxyTarget("GET", ["export"], params("channel_type=BAD")), null);
+
+    // list now also accepts tag_id and channel_type filters
+    const filtered = buildContactProxyTarget("GET", [], params("tag_id=" + id + "&channel_type=instagram"));
+    assert.equal(filtered.query.get("tag_id"), id);
+    assert.equal(filtered.query.get("channel_type"), "instagram");
   });
 });

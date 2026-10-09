@@ -1,7 +1,9 @@
 import hashlib
 import logging
 import secrets
+import smtplib
 import uuid
+from email.message import EmailMessage
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import or_
@@ -92,6 +94,10 @@ class MissingProfileError(TeamServiceError):
 
 class InvitationConflictError(TeamServiceError):
     """Raised when acceptance conflicts with a concurrent change."""
+
+
+class EmailDeliveryError(TeamServiceError):
+    """Raised when an invitation email fails to deliver."""
 
 
 # =========================
@@ -473,16 +479,53 @@ def deliver_invitation(
 ) -> None:
     """
     Email delivery hook.
-
-    TODO: when an email service exists, send an invitation link
-    containing raw_token to invitation.email here. Never log raw_token.
+    Sends an invitation link containing raw_token to invitation.email.
     """
+    if not settings.smtp_host:
+        logger.warning(
+            "SMTP host not configured. Skipping email delivery for invitation %s.",
+            invitation.id,
+        )
+        return
 
-    logger.info(
-        "Team invitation %s created for tenant %s.",
-        invitation.id,
-        invitation.tenant_id,
-    )
+    invite_url = f"{settings.frontend_url}/team/join?token={raw_token}"
+    expiry_hours = settings.invitation_expire_hours
+
+    msg = EmailMessage()
+    msg["Subject"] = "You have been invited to join a workspace on Omniflow"
+    msg["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email}>"
+    msg["To"] = invitation.email
+
+    content = f"""Hello,
+
+You have been invited to join a workspace on Omniflow.
+
+Please click the link below to accept your invitation:
+{invite_url}
+
+This invitation will expire in {expiry_hours} hours.
+
+If you were not expecting this invitation, please ignore this email.
+"""
+    msg.set_content(content)
+
+    try:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
+            server.starttls()
+            if settings.smtp_username and settings.smtp_password:
+                server.login(settings.smtp_username, settings.smtp_password)
+            server.send_message(msg)
+        
+        logger.info(
+            "Team invitation %s delivered to %s.",
+            invitation.id,
+            invitation.email,
+        )
+    except Exception as exc:
+        logger.error("Failed to deliver invitation email: %s", str(exc))
+        raise EmailDeliveryError(
+            "Could not deliver the invitation email. Please check the email address or try again."
+        ) from exc
 
 
 def invite_team_member(
@@ -562,13 +605,19 @@ def invite_team_member(
 
     db.refresh(invitation)
 
-    deliver_invitation(invitation, raw_token)
+    try:
+        deliver_invitation(invitation, raw_token)
+    except EmailDeliveryError:
+        # Delivery failed, so we revoke the invitation to allow immediate retries
+        invitation.revoked_at = _utcnow()
+        db.commit()
+        raise
 
     response = _to_invitation_response(invitation, role)
 
     # Until email delivery exists, development returns the token so the
     # flow can be exercised. It is never returned in other environments.
-    if settings.app_env == "development":
+    if settings.app_env == "development" and not settings.smtp_host:
         response.invitation_token = raw_token
 
     return response

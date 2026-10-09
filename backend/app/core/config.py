@@ -25,6 +25,14 @@ class Settings(BaseSettings):
 
     invitation_expire_hours: int = 72
 
+    # Email (SMTP)
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = "noreply@omniflow.local"
+    smtp_from_name: str = "Omniflow"
+
     # Comma-separated Fernet keys used to encrypt channel credentials.
     # The first key encrypts; all keys decrypt (allows key rotation).
     channel_credential_keys: str = ""
@@ -38,6 +46,26 @@ class Settings(BaseSettings):
 
     # Shared secret for the WhatsApp webhook verification (GET) handshake.
     whatsapp_webhook_verify_token: str = ""
+
+    # Shared secret for the Facebook Messenger webhook verification (GET)
+    # handshake. Set the same value in the Meta app webhook configuration
+    # for the Messenger "messages" field. Empty fails closed.
+    facebook_webhook_verify_token: str = ""
+
+    # Shared secret for the Instagram webhook verification (GET) handshake.
+    # Set the same value in the Meta app webhook configuration for the
+    # Instagram "messages" field. Empty fails closed.
+    instagram_webhook_verify_token: str = ""
+
+    # Tenant self-service Meta OAuth (Facebook Login) onboarding.
+    # The redirect_uri MUST be registered in the Meta app's Facebook Login
+    # settings and point at this backend's OAuth callback.
+    meta_oauth_redirect_uri: str = "http://localhost:8000/api/v1/channels/oauth/callback"
+    # The Facebook Login dialog host (not the Graph API host).
+    meta_facebook_login_base_url: str = "https://www.facebook.com"
+    # How long a started OAuth flow (and the post-callback selection step)
+    # stays valid. Short-lived, single-use.
+    oauth_state_expiry_minutes: int = 10
 
     # Media storage. "local" for development; S3/R2/MinIO backends plug
     # into app/storage. Default local root: backend/var/media (git-ignored).

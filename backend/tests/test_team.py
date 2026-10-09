@@ -804,35 +804,35 @@ ROLES_URL = "/api/v1/roles"
 class RolesEndpointTests(TeamTestCase):
     """GET /roles: assignable flags, RBAC, tenant scoping, no secrets."""
 
-    def roles(self, actor, tenant=None):
+    def get_roles_response(self, actor, tenant=None):
         response = self.client.get(ROLES_URL, headers=bearer(self.token_for(actor, tenant or self.tenant_a)))
         self.assertEqual(response.status_code, 200, response.text)
         return {item["name"]: item for item in response.json()}
 
     def test_lists_all_active_roles_with_fields(self):
-        roles = self.roles(self.owner)
+        roles_data = self.get_roles_response(self.owner)
         self.assertEqual(
-            set(roles),
+            set(roles_data),
             {"OWNER", "ADMIN", "MANAGER", "AGENT", "VIEWER", "DEVELOPER"},
         )
-        for item in roles.values():
+        for item in roles_data.values():
             self.assertEqual(set(item), {"id", "name", "description", "assignable"})
 
     def test_owner_can_assign_every_role(self):
-        roles = self.roles(self.owner)
-        self.assertTrue(all(item["assignable"] for item in roles.values()))
+        roles_data = self.get_roles_response(self.owner)
+        self.assertTrue(all(item["assignable"] for item in roles_data.values()))
 
     def test_non_owner_cannot_assign_owner(self):
         for actor in (self.admin, self.manager):
             with self.subTest(actor=actor.email):
-                roles = self.roles(actor)
-                self.assertFalse(roles["OWNER"]["assignable"])
+                roles_data = self.get_roles_response(actor)
+                self.assertFalse(roles_data["OWNER"]["assignable"])
 
     def test_manager_cannot_assign_above_itself(self):
-        roles = self.roles(self.manager)
-        self.assertTrue(roles["MANAGER"]["assignable"])
-        self.assertTrue(roles["AGENT"]["assignable"])
-        self.assertFalse(roles["ADMIN"]["assignable"])
+        roles_data = self.get_roles_response(self.manager)
+        self.assertTrue(roles_data["MANAGER"]["assignable"])
+        self.assertTrue(roles_data["AGENT"]["assignable"])
+        self.assertFalse(roles_data["ADMIN"]["assignable"])
 
     def test_read_only_roles_can_view_roles(self):
         # user:read is granted to every role; viewers can see role names.
@@ -849,3 +849,61 @@ class RolesEndpointTests(TeamTestCase):
         response = self.client.get(ROLES_URL, headers=bearer(self.token_for(self.owner, self.tenant_a)))
         for needle in ("permission", "user:read", "token", "password", "hash"):
             self.assertNotIn(needle, response.text.lower())
+
+from unittest.mock import patch
+import smtplib
+from app.core.config import settings
+
+class EmailDeliveryTests(TeamTestCase):
+    @patch("smtplib.SMTP")
+    def test_successful_email_delivery(self, mock_smtp):
+        mock_server = mock_smtp.return_value.__enter__.return_value
+        
+        # Enable SMTP for test
+        original_host = settings.smtp_host
+        settings.smtp_host = "smtp.example.com"
+        
+        try:
+            response = self.invite(self.owner, "success@example.com", "AGENT")
+            self.assertEqual(response.status_code, 201)
+            mock_server.send_message.assert_called_once()
+            
+            # Check message details
+            msg = mock_server.send_message.call_args[0][0]
+            self.assertEqual(msg["To"], "success@example.com")
+            self.assertIn("token=", msg.get_content())
+        finally:
+            settings.smtp_host = original_host
+
+    def test_provider_configuration_missing(self):
+        original_host = settings.smtp_host
+        settings.smtp_host = ""
+        
+        try:
+            # Should skip email delivery and succeed without error
+            response = self.invite(self.owner, "no-smtp@example.com", "AGENT")
+            self.assertEqual(response.status_code, 201)
+            self.assertEqual(response.json()["email"], "no-smtp@example.com")
+        finally:
+            settings.smtp_host = original_host
+
+    @patch("smtplib.SMTP")
+    def test_provider_failure_revokes_invitation(self, mock_smtp):
+        mock_server = mock_smtp.return_value.__enter__.return_value
+        mock_server.send_message.side_effect = smtplib.SMTPException("Connection failed")
+        
+        original_host = settings.smtp_host
+        settings.smtp_host = "smtp.example.com"
+        
+        try:
+            response = self.invite(self.owner, "fail@example.com", "AGENT")
+            # Should map EmailDeliveryError to 503
+            self.assertEqual(response.status_code, 503)
+            self.assertIn("Could not deliver the invitation email", response.json()["detail"])
+            
+            # Since it was revoked, we should be able to invite again
+            mock_server.send_message.side_effect = None
+            retry_response = self.invite(self.owner, "fail@example.com", "AGENT")
+            self.assertEqual(retry_response.status_code, 201)
+        finally:
+            settings.smtp_host = original_host
