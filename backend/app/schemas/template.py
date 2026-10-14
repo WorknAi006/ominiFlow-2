@@ -9,6 +9,22 @@ TEMPLATE_NAME_PATTERN = r"^[a-z0-9_]{1,512}$"
 LANGUAGE_PATTERN = r"^[A-Za-z]{2,3}(_[A-Za-z0-9]{2,8})?$"
 
 
+class LocalTemplateCreate(BaseModel):
+    """Create a local (draft) template. WhatsApp requires Meta approval before
+    it becomes usable, so drafts are stored with status ``draft`` and are not
+    sendable until synced as approved."""
+
+    channel_connection_id: UUID
+    name: str = Field(pattern=TEMPLATE_NAME_PATTERN)
+    language: str = Field(pattern=LANGUAGE_PATTERN)
+    category: str | None = Field(default=None, max_length=30)
+    header_text: str | None = Field(default=None, max_length=60)
+    body_text: str = Field(min_length=1, max_length=1024)
+    footer_text: str | None = Field(default=None, max_length=60)
+    buttons: list[str] = Field(default_factory=list, max_length=11)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
 class TemplateResponse(BaseModel):
     id: UUID
     channel_connection_id: UUID

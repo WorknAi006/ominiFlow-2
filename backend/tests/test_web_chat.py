@@ -12,8 +12,6 @@ from app.models import (
     Message,
     MessageDirection,
 )
-from app.models.automation import AutomationExecution
-from app.services.automation_execution_service import process_execution
 from tests.inbox_fixtures import InboxTestCase
 
 
@@ -164,60 +162,7 @@ class OutboundTests(WebChatTestCase):
         self.assertIn(("agent", "Happy to help!"), texts)
 
 
-class AutomationTests(WebChatTestCase):
-
-    def _build_autoreply(self, channel_id):
-        created = self.client.post(
-            "/api/v1/automations", headers=self.headers(), json={"name": "Web auto-reply"},
-        )
-        automation_id = created.json()["id"]
-        trigger = self.client.get(
-            f"/api/v1/automations/{automation_id}", headers=self.headers(),
-        ).json()["nodes"][0]
-        action_id = str(uuid.uuid4())
-        body = {
-            "nodes": [
-                {"id": trigger["id"], "node_type": "trigger_message", "name": "Inbound",
-                 "config": {"channel_connection_id": channel_id}, "sort_order": 0},
-                {"id": action_id, "node_type": "send_text", "name": "Reply",
-                 "config": {"text": "Auto reply from Web Chat."}, "sort_order": 1},
-            ],
-            "edges": [{"source_node_id": trigger["id"], "target_node_id": action_id}],
-        }
-        saved = self.client.put(
-            f"/api/v1/automations/{automation_id}/flow", headers=self.headers(), json=body,
-        )
-        self.assertEqual(saved.status_code, 200, saved.text)
-        activated = self.client.post(
-            f"/api/v1/automations/{automation_id}/activate", headers=self.headers(), json={},
-        )
-        self.assertEqual(activated.status_code, 200, activated.text)
-        return uuid.UUID(automation_id)
-
-    # Tests 11 and 12
-    def test_web_chat_inbound_triggers_automation_and_replies(self):
-        channel_id, public_key = self.create_web_chat_channel()
-        automation_id = self._build_autoreply(channel_id)
-
-        response = self.inbound(public_key, "visitor-auto", "hello bot")
-        self.assertEqual(response.status_code, 201, response.text)
-
-        self.db.expire_all()
-        execution = self.db.query(AutomationExecution).filter_by(
-            tenant_id=self.tenant_a.id, automation_id=automation_id,
-        ).one()
-        self.assertEqual(execution.status, "queued")
-
-        self.assertTrue(process_execution(self.db, execution.id))
-        self.db.refresh(execution)
-        self.assertEqual(execution.status, "completed")
-
-        # The automation's reply was delivered through WebChatProvider.
-        self.db.expire_all()
-        outbound = self.db.query(Message).filter_by(
-            tenant_id=self.tenant_a.id, direction=MessageDirection.OUTBOUND,
-        ).all()
-        self.assertEqual(len(outbound), 1)
-        self.assertEqual(outbound[0].text, "Auto reply from Web Chat.")
-        self.assertTrue(outbound[0].external_message_id.startswith("wc_out_"))
-        self.assertEqual(self.send_api.requests, [])
+# NOTE: The old flow-graph automation auto-reply test was removed when the
+# node/edge automation engine was replaced. Inbound keyword → flow triggering
+# (which covers Web Chat through the same channel-neutral boundary) is tested
+# in tests/test_keywords.py.

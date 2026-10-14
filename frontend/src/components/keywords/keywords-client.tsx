@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, type FormEvent } from "react";
+import Link from "next/link";
 import {
   KeywordApiError,
   createKeyword,
@@ -8,14 +9,16 @@ import {
   listKeywords,
   updateKeyword,
   type Keyword,
+  type MatchType,
 } from "@/lib/keywords/browser";
+import { flowsApi, type FlowSummary } from "@/lib/flows/browser";
 
 type ViewMode = "grid" | "list";
 
 interface KeywordForm {
   id: string | null;
   keyword_text: string;
-  match_type: "exact" | "contains" | "starts_with";
+  match_type: MatchType;
   run_flow: string | null;
   reply_text: string;
 }
@@ -25,6 +28,9 @@ export function KeywordsClient() {
   const [search, setSearch] = useState("");
   
   const [keywords, setKeywords] = useState<Keyword[]>([]);
+  const [flows, setFlows] = useState<FlowSummary[]>([]);
+  const [flowsLoading, setFlowsLoading] = useState(true);
+  const [flowsError, setFlowsError] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   
@@ -46,9 +52,28 @@ export function KeywordsClient() {
     }
   }, []);
 
+  const loadFlows = useCallback(async () => {
+    setFlowsLoading(true);
+    try {
+      const data = await flowsApi.list();
+      setFlows(data.items);
+      setFlowsError("");
+    } catch {
+      setFlowsError("Could not load flows.");
+    } finally {
+      setFlowsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadFlows();
+  }, [load, loadFlows]);
+
+  const flowName = useCallback(
+    (id: string | null) => (id ? flows.find((f) => f.id === id)?.name ?? null : null),
+    [flows],
+  );
 
   const openCreateForm = () => {
     setFormError("");
@@ -223,7 +248,13 @@ export function KeywordsClient() {
                   
                   <div className="mt-auto border-t border-slate-100 pt-3">
                     <span className="text-xs font-medium text-slate-500 uppercase tracking-wider block mb-1">Action:</span>
-                    <span className="text-sm text-slate-700">{k.flow_id ? "Run flow" : "user messages"}</span>
+                    <span className="text-sm text-slate-700">
+                      {k.flow_id
+                        ? `▶ ${k.flow_name || flowName(k.flow_id) || "Run flow"}`
+                        : k.reply_text
+                          ? `↩ ${k.reply_text}`
+                          : "—"}
+                    </span>
                   </div>
                 </div>
               ))}
@@ -247,7 +278,7 @@ export function KeywordsClient() {
                       {k.is_active ? "Active" : "Inactive"}
                     </button>
                   </span>
-                  <span role="cell" className="text-sm text-slate-600">{k.flow_id ? "Run Flow" : "Reply Text"}</span>
+                  <span role="cell" className="text-sm text-slate-600">{k.flow_id ? `▶ ${k.flow_name || flowName(k.flow_id) || "Run Flow"}` : k.reply_text ? "Reply Text" : "—"}</span>
                   <span role="cell" className="text-right">
                     <button type="button" className="text-indigo-600 hover:underline mr-3 text-sm" onClick={() => openEditForm(k)}>Edit</button>
                     <button type="button" className="text-red-600 hover:underline text-sm" onClick={() => void handleDelete(k)} disabled={working}>Delete</button>
@@ -283,27 +314,42 @@ export function KeywordsClient() {
               
               <label className="channel-field mt-3">
                 <span className="font-medium text-slate-700 text-sm block mb-1">Match type</span>
-                <select 
-                  value={formState.match_type} 
-                  onChange={e => setFormState({ ...formState, match_type: e.target.value as any })}
+                <select
+                  value={formState.match_type}
+                  onChange={e => setFormState({ ...formState, match_type: e.target.value as MatchType })}
                   className="channel-input w-full"
                 >
                   <option value="exact">Exact</option>
                   <option value="contains">Contains</option>
                   <option value="starts_with">Starts with</option>
+                  <option value="ends_with">Ends with</option>
                 </select>
               </label>
 
               <label className="channel-field mt-3">
                 <span className="font-medium text-slate-700 text-sm block mb-1">Run flow (optional)</span>
-                <select 
-                  value={formState.run_flow || ""} 
-                  onChange={e => setFormState({ ...formState, run_flow: e.target.value || null })}
-                  className="channel-input w-full"
-                >
-                  <option value="">None</option>
-                  {/* Later on: populate with automations/flows */}
-                </select>
+                {flowsLoading ? (
+                  <div className="channel-input w-full text-slate-400 text-sm">Loading flows…</div>
+                ) : flows.length === 0 ? (
+                  <div className="text-sm text-slate-500 border border-dashed border-slate-200 rounded p-3">
+                    {flowsError || "No flows yet."}{" "}
+                    <Link href="/flow" className="text-indigo-600 hover:underline">Open Flow Builder</Link> to create one.
+                  </div>
+                ) : (
+                  <select
+                    value={formState.run_flow || ""}
+                    onChange={e => setFormState({ ...formState, run_flow: e.target.value || null })}
+                    className="channel-input w-full"
+                  >
+                    <option value="">None (reply with text only)</option>
+                    {flows.map(f => (
+                      <option key={f.id} value={f.id}>
+                        {f.name}{f.status !== "active" ? " (draft)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {flowsError && flows.length > 0 && <span className="text-xs text-red-600 mt-1 block">{flowsError}</span>}
               </label>
 
               <label className="channel-field mt-3">

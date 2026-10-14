@@ -1,5 +1,5 @@
-import { FeaturePlaceholder } from "@/components/feature-placeholder";
+import { SettingsClient } from "@/components/settings/settings-client";
 
 export default function SettingsPage() {
-  return <FeaturePlaceholder title="Settings" description="Workspace preferences and account settings will live here." mark="⚙" />;
+  return <SettingsClient />;
 }

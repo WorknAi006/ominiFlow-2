@@ -1,4 +1,4 @@
-import { FlowClient } from "@/components/flow/flow-client";
+import { FlowList } from "@/components/flow/flow-list";
 import { Metadata } from "next";
 
 export const metadata: Metadata = {
@@ -6,5 +6,5 @@ export const metadata: Metadata = {
 };
 
 export default function FlowPage() {
-  return <FlowClient />;
+  return <FlowList />;
 }

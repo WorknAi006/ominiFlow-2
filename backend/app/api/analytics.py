@@ -12,7 +12,7 @@ from app.models.contact import Contact
 from app.models.conversation import Conversation, ConversationStatus
 from app.models.message import Message, MessageDirection
 from app.models.channel_connection import ChannelConnection, ChannelStatus
-from app.models.automation import Automation, AutomationStatus, AutomationExecution, AutomationExecutionStatus
+from app.models.automation import Automation, AutomationRun, AutomationRunStatus
 
 router = APIRouter(tags=["Analytics"])
 
@@ -53,10 +53,10 @@ def get_analytics_overview(
     resolved_chats = conv_statuses.get(ConversationStatus.RESOLVED.value, 0)
     closed_chats = conv_statuses.get(ConversationStatus.CLOSED.value, 0)
 
-    # Active Flows
+    # Active automations
     active_flows = db.scalar(
         select(func.count()).select_from(Automation)
-        .where(Automation.tenant_id == tenant.id, Automation.status == AutomationStatus.ACTIVE)
+        .where(Automation.tenant_id == tenant.id, Automation.is_active.is_(True))
     ) or 0
 
     return {
@@ -133,19 +133,19 @@ def get_analytics_automations(
     start_date: datetime | None = None,
     end_date: datetime | None = None,
 ) -> dict[str, Any]:
-    q = select(AutomationExecution.status, func.count()).where(AutomationExecution.tenant_id == tenant.id)
+    q = select(AutomationRun.status, func.count()).where(AutomationRun.tenant_id == tenant.id)
     if start_date:
-        q = q.where(AutomationExecution.created_at >= start_date)
+        q = q.where(AutomationRun.created_at >= start_date)
     if end_date:
-        q = q.where(AutomationExecution.created_at <= end_date)
-    q = q.group_by(AutomationExecution.status)
-    
+        q = q.where(AutomationRun.created_at <= end_date)
+    q = q.group_by(AutomationRun.status)
+
     statuses = dict(db.execute(q).all())
-    
+
     total = sum(statuses.values())
-    completed = statuses.get(AutomationExecutionStatus.COMPLETED.value, 0)
-    failed = statuses.get(AutomationExecutionStatus.FAILED.value, 0)
-    
+    completed = statuses.get(AutomationRunStatus.SUCCESS.value, 0)
+    failed = statuses.get(AutomationRunStatus.FAILED.value, 0)
+
     return {
         "total_executions": total,
         "completed": completed,

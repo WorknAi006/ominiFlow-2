@@ -1,42 +1,53 @@
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const STATUSES = new Set(["draft", "active", "paused", "archived"]);
 export type AutomationMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
+/**
+ * Whitelist the rule-based automation routes the browser may reach through
+ * the Next proxy. Anything not listed here is rejected before it leaves the
+ * edge.
+ */
 export function buildAutomationTarget(method: string, segments: string[], params: URLSearchParams) {
-  if (!["GET", "POST", "PATCH", "PUT", "DELETE"].includes(method)) return null;
-  if (method === "GET" && segments.length === 1 && segments[0] === "worker-health" && params.size === 0) {
-    return { backendPath: "/automations/worker-health", method: "GET" as AutomationMethod, query: new URLSearchParams() };
-  }
-  let path = "/automations";
-  if (segments.length) {
-    if (!UUID.test(segments[0])) return null;
-    path += `/${segments[0]}`;
-    const tail = segments.slice(1);
-    if (tail.length) {
-      const valid = (tail.length === 1 && ["validate", "activate", "pause", "simulate", "nodes", "flow", "executions", "metrics"].includes(tail[0])) ||
-        (tail.length === 2 && tail[0] === "nodes" && UUID.test(tail[1]) && ["PATCH", "DELETE"].includes(method)) ||
-        (tail.length === 3 && tail[0] === "executions" && UUID.test(tail[1]) && tail[2] === "logs" && method === "GET");
-      if (!valid) return null;
-      path += `/${tail.join("/")}`;
-    }
-  }
-  const allowed = new Set(["page", "page_size", "status", "search"]);
-  for (const key of params.keys()) if (!allowed.has(key)) return null;
+  if (!["GET", "POST", "PATCH", "DELETE"].includes(method)) return null;
+
   const query = new URLSearchParams();
-  const page = params.get("page") ?? "1", size = params.get("page_size") ?? "20";
-  if (!/^\d+$/.test(page) || Number(page) < 1 || Number(page) > 1000000 || !/^\d+$/.test(size) || Number(size) < 1 || Number(size) > 100) return null;
-  if (params.has("page")) query.set("page", page);
-  if (params.has("page_size")) query.set("page_size", size);
-  const status = params.get("status"), search = params.get("search");
-  if (status && !STATUSES.has(status)) return null;
-  if (search && search.length > 100) return null;
-  if (status) query.set("status", status);
+  const allowed = new Set(["page", "page_size", "search"]);
+  for (const key of params.keys()) if (!allowed.has(key)) return null;
+  const page = params.get("page");
+  const size = params.get("page_size");
+  if (page !== null && (!/^\d+$/.test(page) || Number(page) < 1 || Number(page) > 1_000_000)) return null;
+  if (size !== null && (!/^\d+$/.test(size) || Number(size) < 1 || Number(size) > 100)) return null;
+  const search = params.get("search");
+  if (search !== null && search.length > 100) return null;
+  if (page !== null) query.set("page", page);
+  if (size !== null) query.set("page_size", size);
   if (search) query.set("search", search);
-  const last = segments.at(-1);
-  const ok = method === "GET" ? !last || segments.length === 1 || ["nodes", "executions", "metrics"].includes(last) || (last === "logs" && segments.length === 4)
-    : method === "POST" ? !last || ["validate", "activate", "pause", "simulate", "nodes"].includes(last)
-      : method === "PATCH" ? segments.length === 1 || (segments.length === 2 && last === "nodes")
-        : method === "PUT" ? segments.length === 2 && last === "flow"
-          : method === "DELETE" ? segments.length === 1 || (segments.length === 2 && last === "nodes") : false;
-  return ok ? { backendPath: path, method: method as AutomationMethod, query } : null;
+
+  const build = (path: string) => ({ backendPath: path, method: method as AutomationMethod, query });
+
+  // Collection-level routes.
+  if (segments.length === 0) {
+    if (method === "GET" || method === "POST") return build("/automations");
+    return null;
+  }
+
+  // Fixed sub-resources: /automations/options|metrics|runs (GET only).
+  if (segments.length === 1 && ["options", "metrics", "runs"].includes(segments[0])) {
+    return method === "GET" ? build(`/automations/${segments[0]}`) : null;
+  }
+
+  // Everything else is scoped to one automation id.
+  if (!UUID.test(segments[0])) return null;
+  const tail = segments.slice(1);
+
+  if (tail.length === 0) {
+    if (["GET", "PATCH", "DELETE"].includes(method)) return build(`/automations/${segments[0]}`);
+    return null;
+  }
+  if (tail.length === 1 && ["activate", "pause"].includes(tail[0]) && method === "POST") {
+    return build(`/automations/${segments[0]}/${tail[0]}`);
+  }
+  if (tail.length === 1 && tail[0] === "runs" && method === "GET") {
+    return build(`/automations/${segments[0]}/runs`);
+  }
+  return null;
 }

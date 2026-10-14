@@ -48,8 +48,7 @@ export function AppShell({ user, tenant, children }: AppShellProps) {
       setLogoutError("Could not reach the service. Please try signing out again.");
       return;
     }
-    router.replace("/login");
-    router.refresh();
+    window.location.href = "/login";
   }
 
   return (
@@ -60,12 +59,6 @@ export function AppShell({ user, tenant, children }: AppShellProps) {
           <span className="brand-mark" aria-hidden="true">o</span>
           <span>omniflow</span>
         </Link>
-
-        <div className="workspace-card">
-          <span className="workspace-label">WORKSPACE</span>
-          <span className="workspace-name">{tenant.name}</span>
-          <span className="workspace-slug">{tenant.slug}</span>
-        </div>
 
         <nav aria-label="Main navigation" className="sidebar-nav mt-8 space-y-1">
           <p className="nav-section-label">WORKSPACE</p>
@@ -86,16 +79,15 @@ export function AppShell({ user, tenant, children }: AppShellProps) {
           })}
         </nav>
 
-        <div className="sidebar-bottom">
+        <div className="sidebar-bottom !pt-1 !border-t-0">
           <div className="sidebar-user">
-            <span className="avatar avatar-small">{initials || "O"}</span>
+            <span className="avatar avatar-small !w-7 !h-7 !text-[11px]">{initials || "O"}</span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-semibold text-white">{fullName || "Team member"}</span>
-              <span className="mt-0.5 block truncate text-xs text-slate-400">{user.email}</span>
             </span>
           </div>
-          {logoutError && <p role="alert" className="mt-3 text-xs leading-5 text-rose-200">{logoutError}</p>}
-          <button className="logout-button" type="button" onClick={logout}>Sign out</button>
+          {logoutError && <p role="alert" className="mt-1 text-xs leading-4 text-rose-200">{logoutError}</p>}
+          <button className="logout-button !mt-1 !py-1.5 !text-[13px]" type="button" onClick={logout}>Sign out</button>
         </div>
       </aside>
 

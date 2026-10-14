@@ -449,6 +449,16 @@ class ConnectTests(WhatsAppTestCase):
         finally:
             settings.meta_app_secret = APP_SECRET
         self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"detail": "WhatsApp integration is not configured."})
+        self.assertEqual(self.graph.requests, [])
+
+        settings.meta_app_id = ""
+        try:
+            response = self.connect(self.wa_a, access_token=GOOD_TOKEN)
+        finally:
+            settings.meta_app_id = APP_ID
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {"detail": "WhatsApp integration is not configured."})
         self.assertEqual(self.graph.requests, [])
 
     def test_failed_reconnect_keeps_connected_channel(self):

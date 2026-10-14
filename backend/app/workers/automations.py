@@ -1,7 +1,7 @@
-"""Poll and run durable automation executions.
+"""Periodically fire time-based ("chat stuck in a mode") automation rules.
 
-Uses the same PostgreSQL SKIP LOCKED worker pattern as the existing
-WhatsApp event/media workers; the inbound webhook does not run flows.
+The event-driven triggers run inline from their service hooks; this worker
+only handles the time threshold that has no inbound event to ride on.
 """
 import argparse
 import logging
@@ -12,7 +12,7 @@ from threading import Event
 import uuid
 
 from app.core.database import SessionLocal
-from app.services.automation_execution_service import process_pending_executions
+from app.services.automation_execution_service import run_stuck_scan
 
 logger = logging.getLogger("app.workers.automations")
 
@@ -21,19 +21,19 @@ def worker_identity() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
 
 
-def run_once(batch_size: int = 50, worker_id: str = "automation-worker") -> dict[str, int]:
+def run_once(batch_size: int = 200) -> dict[str, int]:
     db = SessionLocal()
     try:
-        return process_pending_executions(db, limit=batch_size, worker_id=worker_id)
+        return run_stuck_scan(db, limit=batch_size)
     finally:
         db.close()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Process queued automation executions.")
+    parser = argparse.ArgumentParser(description="Fire time-based automation rules.")
     parser.add_argument("--loop", action="store_true", help="Poll continuously.")
-    parser.add_argument("--interval", type=float, default=2.0)
-    parser.add_argument("--batch-size", type=int, default=50)
+    parser.add_argument("--interval", type=float, default=60.0)
+    parser.add_argument("--batch-size", type=int, default=200)
     parser.add_argument("--worker-id", default=None)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -50,16 +50,15 @@ def main() -> None:
     try:
         while not stopping.is_set():
             try:
-                counts = run_once(args.batch_size, worker_id)
+                counts = run_once(args.batch_size)
                 if counts.get("processed"):
                     logger.info("automation_worker_batch_completed", extra={"worker_id": worker_id, **counts})
             except Exception as exc:
-                # One database/provider failure must not terminate the polling process.
                 logger.error("automation_worker_batch_failed", extra={"worker_id": worker_id, "error_type": type(exc).__name__})
             if not args.loop:
                 break
             if not stopping.is_set():
-                stopping.wait(max(0.1, args.interval))
+                stopping.wait(max(1.0, args.interval))
     finally:
         logger.info("automation_worker_stopped", extra={"worker_id": worker_id})
 

@@ -28,8 +28,6 @@ from app.models import (
     Message,
     MessageDirection,
 )
-from app.models.automation import AutomationExecution
-from app.services.automation_execution_service import process_execution
 from app.services.credential_service import get_credential_service
 from app.services.realtime_service import inbox_channel
 from tests.base import DatabaseTestCase
@@ -505,49 +503,10 @@ class InstagramTestCase(DatabaseTestCase):
         self.assertEqual(resp.status_code, 404)
         self.assertEqual(self.fake.sent, [])
 
-    # ========== automation ==========
-
-    def _build_active_automation(self):
-        created = self.client.post(
-            "/api/v1/automations", headers=self.auth_h(), json={"name": "IG pricing"},
-        )
-        automation_id = created.json()["id"]
-        trigger = self.client.get(
-            f"/api/v1/automations/{automation_id}", headers=self.auth_h(),
-        ).json()["nodes"][0]
-        condition_id, action_id = str(uuid.uuid4()), str(uuid.uuid4())
-        body = {
-            "nodes": [
-                {"id": trigger["id"], "node_type": "trigger_message", "name": "Inbound IG", "config": {"channel_connection_id": str(self.ig_a.id)}, "sort_order": 0},
-                {"id": condition_id, "node_type": "message_contains", "name": "pricing", "config": {"value": "price", "case_sensitive": False}, "sort_order": 1},
-                {"id": action_id, "node_type": "send_text", "name": "Reply", "config": {"text": "Thanks for asking about pricing."}, "sort_order": 2},
-            ],
-            "edges": [
-                {"source_node_id": trigger["id"], "target_node_id": condition_id},
-                {"source_node_id": condition_id, "target_node_id": action_id, "branch": "true"},
-            ],
-        }
-        self.assertEqual(
-            self.client.put(f"/api/v1/automations/{automation_id}/flow", headers=self.auth_h(), json=body).status_code, 200,
-        )
-        self.assertEqual(
-            self.client.post(f"/api/v1/automations/{automation_id}/activate", headers=self.auth_h(), json={}).status_code, 200,
-        )
-        return automation_id
-
-    def test_18_automation_send_text_through_instagram_provider(self):
-        automation_id = self._build_active_automation()
-        self.assertEqual(self.post_webhook(self.payload(IG_A, IGSID_1, "what is the price?")).status_code, 200)
-
-        execution = self.db.query(AutomationExecution).filter_by(
-            tenant_id=self.tenant_a.id, automation_id=uuid.UUID(automation_id),
-        ).one()
-        self.assertEqual(execution.status, "queued")
-        self.assertTrue(process_execution(self.db, execution.id))
-        self.db.refresh(execution)
-        self.assertEqual(execution.status, "completed")
-        self.assertEqual(len(self.fake.sent), 1)
-        self.assertEqual(self.fake.sent[0]["recipient"]["id"], IGSID_1)
+    # NOTE: The old flow-graph automation auto-reply test was removed when the
+    # node/edge automation engine was replaced. Inbound keyword → flow
+    # triggering (covering Instagram via the channel-neutral boundary) is
+    # tested in tests/test_keywords.py.
 
     # ========== realtime ==========
 

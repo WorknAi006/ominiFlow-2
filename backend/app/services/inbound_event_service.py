@@ -93,16 +93,18 @@ def process_inbound_event(
 
     conversation_service.record_activity(db, conversation, event.occurred_at, inbound=True)
 
-    # Automation is enqueued in the same durable transaction; workers act
-    # later, outside the webhook request. Imported lazily to avoid a cycle.
-    from app.services.automation_service import enqueue_for_inbound_message
-    enqueue_for_inbound_message(
+    # Keyword → flow triggering. Recorded in this same durable transaction so
+    # it is atomic with the message and idempotent on webhook replays. Covers
+    # every channel because this boundary is channel-neutral. Imported lazily
+    # to avoid an import cycle; never raises into the inbound path.
+    from app.services import keyword_trigger_service
+    keyword_trigger_service.handle_inbound(
         db,
         tenant_id=event.tenant_id,
-        channel_id=event.channel_connection_id,
-        conversation_id=conversation.id,
-        contact_id=contact.id,
-        message_id=created.id,
+        channel_type=event.channel_type,
+        conversation=conversation,
+        contact=contact,
+        message=created,
     )
 
     media = event.media_metadata or {}

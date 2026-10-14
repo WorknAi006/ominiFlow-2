@@ -1,18 +1,21 @@
 import type { PaginatedResponse } from "@/lib/api/client";
 
+export type MatchType = "exact" | "contains" | "starts_with" | "ends_with";
+
 export interface Keyword {
   id: string;
   keyword_text: string;
-  match_type: "exact" | "contains" | "starts_with";
+  match_type: MatchType;
   is_active: boolean;
   flow_id: string | null;
+  flow_name: string | null;
   reply_text: string | null;
   created_at: string;
 }
 
 export interface KeywordCreateInput {
   keyword_text: string;
-  match_type: "exact" | "contains" | "starts_with";
+  match_type: MatchType;
   is_active?: boolean;
   flow_id?: string | null;
   reply_text?: string | null;
@@ -20,7 +23,7 @@ export interface KeywordCreateInput {
 
 export interface KeywordUpdateInput {
   keyword_text?: string;
-  match_type?: "exact" | "contains" | "starts_with";
+  match_type?: MatchType;
   is_active?: boolean;
   flow_id?: string | null;
   reply_text?: string | null;

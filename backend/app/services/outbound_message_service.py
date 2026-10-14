@@ -9,6 +9,7 @@ sanitized error).
 import logging
 import hashlib
 import json
+import mimetypes
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -34,6 +35,8 @@ from app.models import (
     User,
 )
 from app.schemas.message import (
+    InteractiveMessageCreate,
+    MediaMessageCreate,
     MessageCreate,
     MessageResponse,
     TemplateMessageCreate,
@@ -99,6 +102,31 @@ def _request_hash(conversation_id: uuid.UUID, data: MessageCreate) -> str:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class MediaUnavailableError(OutboundMessageError):
+    """Raised when a flow media asset cannot be read for sending."""
+
+
+def _resolve_flow_media(tenant_id: uuid.UUID, media_key: str) -> tuple[bytes, str]:
+    """Read a flow-uploaded asset's bytes and content type, restricted to the
+    tenant's own asset prefix (keys embed the tenant id)."""
+    from app.storage import get_storage
+    from app.storage.base import StorageError
+
+    if not media_key.startswith(f"flow-assets/{tenant_id.hex}/"):
+        raise MediaUnavailableError("Media asset does not belong to this tenant.")
+    storage = get_storage()
+    try:
+        if not storage.exists(media_key):
+            raise MediaUnavailableError("Media asset was not found.")
+        data = b"".join(storage.iter_chunks(media_key))
+    except StorageError:
+        raise MediaUnavailableError("Media asset could not be read.") from None
+    if not data:
+        raise MediaUnavailableError("Media asset is empty.")
+    content_type = mimetypes.guess_type(media_key)[0] or "application/octet-stream"
+    return data, content_type
 
 
 def _finish(
@@ -230,6 +258,22 @@ def send_message(
                 "components": template_components,
             }
         }
+    elif isinstance(data, InteractiveMessageCreate):
+        template_components = []
+        message_type = MessageType.INTERACTIVE
+        message_text = data.body
+        message_metadata = {
+            "interactive": {
+                "header": data.header.model_dump(exclude_none=True) if data.header else None,
+                "footer": data.footer,
+                "buttons": [b.model_dump(exclude_none=True) for b in data.buttons],
+            }
+        }
+    elif isinstance(data, MediaMessageCreate):
+        template_components = []
+        message_type = MessageType(data.media_type)
+        message_text = data.caption
+        message_metadata = {"media": {"type": data.media_type, "filename": data.filename}}
     else:
         template_components = []
         message_type = MessageType.TEXT
@@ -295,6 +339,42 @@ def send_message(
                 data.language,
                 template_components,
             )
+        elif isinstance(data, InteractiveMessageCreate):
+            header_dict = None
+            if data.header is not None:
+                if data.header.type == "text":
+                    header_dict = {"type": "text", "text": data.header.text or ""}
+                elif data.header.media_key:
+                    media_bytes, content_type = _resolve_flow_media(tenant_id, data.header.media_key)
+                    media_id = provider.upload_media(
+                        credentials, phone_number_id, media_bytes, content_type, data.header.filename,
+                    )
+                    header_dict = {"type": data.header.type, "id": media_id, "filename": data.header.filename}
+            external_id = provider.send_interactive_message(
+                credentials,
+                phone_number_id,
+                recipient,
+                body=data.body,
+                header=header_dict,
+                footer=data.footer,
+                reply_buttons=[{"id": b.id, "title": b.title} for b in data.buttons if b.kind == "reply"],
+                url_buttons=[{"title": b.title, "url": b.url} for b in data.buttons if b.kind == "url" and b.url],
+                call_buttons=[{"title": b.title, "phone_number": b.phone_number} for b in data.buttons if b.kind == "call" and b.phone_number],
+            )
+        elif isinstance(data, MediaMessageCreate):
+            media_bytes, content_type = _resolve_flow_media(tenant_id, data.media_key)
+            media_id = provider.upload_media(
+                credentials, phone_number_id, media_bytes, content_type, data.filename,
+            )
+            external_id = provider.send_media_message(
+                credentials,
+                phone_number_id,
+                recipient,
+                data.media_type,
+                media_id,
+                data.caption,
+                data.filename,
+            )
         else:
             external_id = provider.send_text(
                 credentials,
@@ -303,6 +383,9 @@ def send_message(
                 data.text,
                 reply_to_external_id,
             )
+    except MediaUnavailableError as exc:
+        _finish(db, tenant_id, message_id, error_message=str(exc))
+        raise MessageSendFailedError(str(exc), message_id) from None
     except ProviderRequestError as exc:
         _finish(db, tenant_id, message_id, error_code=exc.code, error_message=str(exc))
         raise MessageSendFailedError(f"WhatsApp rejected the message: {exc}", message_id) from None
@@ -322,7 +405,11 @@ def send_message(
         tenant_id,
         message_id,
         external_id=external_id,
-        conversation=conversation if isinstance(data, TextMessageCreate) else None,
+        conversation=(
+            conversation
+            if isinstance(data, (TextMessageCreate, InteractiveMessageCreate, MediaMessageCreate))
+            else None
+        ),
     )
     if realtime_event is not None:
         realtime_service.publish_event(realtime_event)

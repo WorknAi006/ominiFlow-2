@@ -67,8 +67,24 @@ def parse_inbound_message(message: dict[str, Any]) -> InboundContent:
             metadata={"location": _pick(message.get("location"), LOCATION_FIELDS)},
         )
 
-    # Unsupported (sticker, contacts, button, interactive replies, ...):
-    # keep the provider type, invent no content.
+    if whatsapp_type == "interactive":
+        # Reply to an interactive button/list message. The chosen option's
+        # title becomes the message text (so it shows in the inbox and the
+        # flow engine can branch on it); the id is kept in metadata.
+        interactive = message.get("interactive")
+        interactive = interactive if isinstance(interactive, dict) else {}
+        reply_kind = interactive.get("type")
+        reply = interactive.get(reply_kind) if isinstance(interactive.get(reply_kind), dict) else {}
+        title = _str_or_none(reply.get("title"))
+        reply_id = _str_or_none(reply.get("id"))
+        return InboundContent(
+            message_type=MessageType.TEXT,
+            text=title or reply_id,
+            metadata={"interactive_reply": {"type": _str_or_none(reply_kind), "id": reply_id, "title": title}},
+        )
+
+    # Unsupported (sticker, contacts, ...): keep the provider type, invent
+    # no content.
     return InboundContent(
         message_type=MessageType.UNKNOWN,
         metadata={

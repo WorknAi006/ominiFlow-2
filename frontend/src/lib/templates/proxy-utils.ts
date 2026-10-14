@@ -82,6 +82,11 @@ export function buildTemplateProxyTarget(
     return { backendPath: `/templates/${segments[0]}`, method: "GET", query: empty };
   }
 
+  // POST /templates — create a local (draft) template.
+  if (segments.length === 0 && method === "POST" && params.size === 0) {
+    return { backendPath: "/templates", method: "POST", query: empty };
+  }
+
   // POST /templates/sync/{channel_id} — reuse the existing channel sync.
   if (segments.length === 2 && segments[0] === "sync" && method === "POST" && params.size === 0 && UUID_PATTERN.test(segments[1])) {
     return { backendPath: `/channels/${segments[1]}/templates/sync`, method: "POST", query: empty };

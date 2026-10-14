@@ -67,6 +67,11 @@ class FakeSendApi:
                 json={"error": {"message": message.replace("{token}", token), "code": code}},
             )
 
+        # Media upload (multipart) returns a media id, not a message id.
+        if request.url.path.rstrip("/").endswith("/media"):
+            self.counter += 1
+            return httpx.Response(200, json={"id": f"media.OUT{self.counter}-{uuid.uuid4().hex[:8]}"})
+
         self.counter += 1
         return httpx.Response(200, json={
             "messaging_product": "whatsapp",

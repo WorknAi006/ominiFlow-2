@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy import func, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.integrations.base import (
@@ -82,6 +82,10 @@ class TemplateNotConfiguredError(TemplateServiceError):
 
 class TemplateNotUsableError(TemplateServiceError):
     pass
+
+
+class TemplateAlreadyExistsError(TemplateServiceError):
+    """A template with this name + language already exists on the channel."""
 
 
 class TemplateParameterError(TemplateServiceError):
@@ -238,6 +242,41 @@ def get_template(db: Session, tenant_id: uuid.UUID, template_id: uuid.UUID) -> T
     )
     if template is None:
         raise TemplateNotFoundError("Template not found.")
+    return to_template_response(template)
+
+
+def create_local_template(db: Session, tenant_id: uuid.UUID, data) -> TemplateResponse:
+    """Store a local draft template. Not sendable until approved by Meta and
+    synced (status stays ``draft``, is_usable False)."""
+    channel = _get_channel(db, tenant_id, data.channel_connection_id)
+
+    components: list[dict[str, Any]] = []
+    if data.header_text:
+        components.append({"type": "HEADER", "format": "TEXT", "text": data.header_text})
+    components.append({"type": "BODY", "text": data.body_text})
+    if data.footer_text:
+        components.append({"type": "FOOTER", "text": data.footer_text})
+    if data.buttons:
+        components.append({"type": "BUTTONS", "buttons": [{"type": "QUICK_REPLY", "text": b} for b in data.buttons if b]})
+
+    template = MessageTemplate(
+        tenant_id=tenant_id,
+        channel_connection_id=channel.id,
+        external_template_id=None,
+        name=data.name,
+        language=data.language,
+        category=data.category,
+        status="draft",
+        components=components,
+        is_active=True,
+    )
+    db.add(template)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise TemplateAlreadyExistsError("A template with this name and language already exists on this channel.")
+    db.refresh(template)
     return to_template_response(template)
 
 

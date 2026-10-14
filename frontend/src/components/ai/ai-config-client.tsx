@@ -14,6 +14,7 @@ const EyeOffIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="http:/
 const InfoIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></svg>);
 
 import { useAiConfigHook } from "./use-ai-config";
+import { KnowledgeBaseTab } from "./knowledge-base-tab";
 
 export function AiConfigClient() {
   const [activeTab, setActiveTab] = useState("API Providers");
@@ -67,7 +68,7 @@ export function AiConfigClient() {
         
         {/* Tabs */}
         <div className="flex gap-2 mb-8 border-b border-slate-200 pb-px">
-          {["API Providers", "Business Profile", "Agent Tools"].map(tab => (
+          {["API Providers", "Business Profile", "Agent Tools", "Knowledge Base"].map(tab => (
             <button 
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -80,6 +81,7 @@ export function AiConfigClient() {
               {tab === "API Providers" && <KeyIcon className="w-4 h-4" />}
               {tab === "Business Profile" && <BuildingIcon className="w-4 h-4" />}
               {tab === "Agent Tools" && <WrenchIcon className="w-4 h-4" />}
+              {tab === "Knowledge Base" && <InfoIcon className="w-4 h-4" />}
               {tab}
             </button>
           ))}
@@ -272,6 +274,10 @@ export function AiConfigClient() {
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === "Knowledge Base" && (
+          <KnowledgeBaseTab />
         )}
 
       </div>

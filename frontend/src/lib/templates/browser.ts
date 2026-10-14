@@ -32,12 +32,13 @@ function redirectToLogin() {
   window.location.replace(`/login?reason=session-expired&next=${encodeURIComponent(destination)}`);
 }
 
-async function request<T>(path: string, options: { method?: "GET" | "POST" } = {}): Promise<T> {
+async function request<T>(path: string, options: { method?: "GET" | "POST"; body?: unknown } = {}): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`/api/templates${path}`, {
       method: options.method ?? "GET",
-      headers: { Accept: "application/json" },
+      headers: { Accept: "application/json", ...(options.body !== undefined ? { "Content-Type": "application/json" } : {}) },
+      ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
       cache: "no-store",
     });
   } catch {
@@ -71,6 +72,21 @@ export function listTemplates(filters: TemplateFilters = {}) {
 
 export function getTemplate(templateId: string) {
   return request<MessageTemplate>(`/${encodeURIComponent(templateId)}`);
+}
+
+export interface LocalTemplateInput {
+  channel_connection_id: string;
+  name: string;
+  language: string;
+  category?: string | null;
+  header_text?: string | null;
+  body_text: string;
+  footer_text?: string | null;
+  buttons?: string[];
+}
+
+export function createTemplate(input: LocalTemplateInput) {
+  return request<MessageTemplate>("", { method: "POST", body: input });
 }
 
 export function syncTemplates(channelId: string) {

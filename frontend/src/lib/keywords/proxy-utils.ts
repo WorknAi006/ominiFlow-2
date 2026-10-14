@@ -25,7 +25,7 @@ export function buildKeywordProxyTarget(
     if (method === "POST") {
       if (!isRecord(body)) return null;
       if (typeof body.keyword_text !== "string" || body.keyword_text.trim().length < 1 || body.keyword_text.length > 255) return null;
-      if (typeof body.match_type !== "string" || !["exact", "contains", "starts_with"].includes(body.match_type)) return null;
+      if (typeof body.match_type !== "string" || !["exact", "contains", "starts_with", "ends_with"].includes(body.match_type)) return null;
       
       const out: Record<string, unknown> = { 
         keyword_text: body.keyword_text.trim(), 
@@ -58,7 +58,7 @@ export function buildKeywordProxyTarget(
       if (!isRecord(body)) return null;
       const out: Record<string, unknown> = {};
       if ("keyword_text" in body && typeof body.keyword_text === "string") out.keyword_text = body.keyword_text.trim();
-      if ("match_type" in body && typeof body.match_type === "string" && ["exact", "contains", "starts_with"].includes(body.match_type)) {
+      if ("match_type" in body && typeof body.match_type === "string" && ["exact", "contains", "starts_with", "ends_with"].includes(body.match_type)) {
         out.match_type = body.match_type;
       }
       if ("is_active" in body && typeof body.is_active === "boolean") out.is_active = body.is_active;

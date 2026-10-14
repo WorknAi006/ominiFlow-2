@@ -23,9 +23,12 @@ from app.api.realtime import router as realtime_router
 from app.api.automations import router as automations_router
 from app.api.keywords import router as keywords_router
 from app.api.whatsapp_forms import router as whatsapp_forms_router
+from app.api.campaigns import router as campaigns_router
 from app.api.ai_config import router as ai_config_router
+from app.api.knowledge_bases import router as knowledge_bases_router
 from app.api.analytics import router as analytics_router
-from app.api.ai_config import router as ai_config_router
+from app.api.ecommerce import router as ecommerce_router
+from app.api.flows import router as flows_router
 from app.core.config import settings
 
 
@@ -167,6 +170,11 @@ app.include_router(
 )
 
 app.include_router(
+    campaigns_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
     keywords_router,
     prefix="/api/v1",
 )
@@ -183,7 +191,23 @@ app.include_router(
 )
 
 app.include_router(
+    knowledge_bases_router,
+    prefix="/api/v1",
+    tags=["Knowledge Base"],
+)
+
+app.include_router(
     analytics_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    ecommerce_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    flows_router,
     prefix="/api/v1",
 )
 

@@ -129,6 +129,7 @@ class MetaGraphClient:
         params: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        files: dict[str, Any] | None = None,
         with_proof: bool = True,
         secrets: Iterable[str | None] = (),
     ) -> dict[str, Any]:
@@ -151,6 +152,7 @@ class MetaGraphClient:
                 params=query,
                 data=data,
                 json=json,
+                files=files,
                 headers=headers,
             )
         except httpx.HTTPError:

@@ -370,6 +370,10 @@ def create_contact(
     _commit(db)
     db.refresh(contact)
 
+    # Fire "new contact created" automation rules (best-effort).
+    from app.services import automation_service
+    automation_service.on_contact_created(db, contact)
+
     return to_contact_response(contact)
 
 

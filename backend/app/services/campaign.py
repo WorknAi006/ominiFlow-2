@@ -1,0 +1,158 @@
+import uuid
+from typing import List, Tuple, Optional, Any
+from sqlalchemy import select, func
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+
+from app.models.campaign import Campaign, CampaignStatus
+from app.models.contact import Contact
+from app.models.tag import ContactTag
+from app.models.channel_connection import ChannelConnection
+from app.schemas.campaign import CampaignCreate, CampaignUpdate
+from app.models.campaign_recipient import CampaignRecipient, CampaignRecipientStatus
+
+class CampaignService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_audience_count(self, tenant_id: uuid.UUID, config: dict[str, Any]) -> int:
+        tags = config.get("tags", [])
+        if not tags:
+            return 0
+        
+        # Audience is contacts that have at least one of the tags
+        query = select(func.count(func.distinct(ContactTag.contact_id))).where(
+            ContactTag.tenant_id == tenant_id,
+            ContactTag.tag_id.in_(tags)
+        )
+        return self.db.scalar(query) or 0
+
+    def create_campaign(self, tenant_id: uuid.UUID, data: CampaignCreate) -> Campaign:
+        # Validate channel connection
+        channel = self.db.scalar(
+            select(ChannelConnection).where(
+                ChannelConnection.id == data.channel_connection_id,
+                ChannelConnection.tenant_id == tenant_id,
+                ChannelConnection.is_deleted.is_(False)
+            )
+        )
+        if not channel:
+            raise ValueError("Channel connection not found")
+
+        # Validate template
+        if data.message_template_id:
+            template = self.db.scalar(
+                select(MessageTemplate).where(
+                    MessageTemplate.id == data.message_template_id,
+                    MessageTemplate.tenant_id == tenant_id
+                )
+            )
+            if not template:
+                raise ValueError("Message template not found")
+
+        # Calculate recipients
+        audience_count = 0
+        if data.audience_config:
+            audience_count = self.get_audience_count(tenant_id, data.audience_config)
+
+        campaign_data = data.model_dump()
+        campaign = Campaign(
+            **campaign_data, 
+            tenant_id=tenant_id, 
+            total_recipients=audience_count,
+            status=CampaignStatus.DRAFT
+        )
+        self.db.add(campaign)
+        
+        self.db.commit()
+        self.db.refresh(campaign)
+        return campaign
+
+    def get_campaigns(
+        self, tenant_id: uuid.UUID, skip: int = 0, limit: int = 100, search: Optional[str] = None
+    ) -> Tuple[List[Campaign], int]:
+        query = select(Campaign).where(Campaign.tenant_id == tenant_id)
+        if search:
+            query = query.where(Campaign.name.ilike(f"%{search}%"))
+        
+        total = self.db.scalar(select(func.count()).select_from(query.subquery())) or 0
+        campaigns = self.db.scalars(
+            query.order_by(Campaign.created_at.desc()).offset(skip).limit(limit)
+        ).all()
+        return list(campaigns), total
+
+    def get_campaign(self, tenant_id: uuid.UUID, campaign_id: uuid.UUID) -> Optional[Campaign]:
+        return self.db.scalar(select(Campaign).where(Campaign.tenant_id == tenant_id, Campaign.id == campaign_id))
+
+    def update_campaign(self, tenant_id: uuid.UUID, campaign_id: uuid.UUID, data: CampaignUpdate) -> Optional[Campaign]:
+        campaign = self.get_campaign(tenant_id, campaign_id)
+        if not campaign:
+            return None
+
+        update_data = data.model_dump(exclude_unset=True)
+        
+        # If audience changed, update count
+        if "audience_config" in update_data:
+            update_data["total_recipients"] = self.get_audience_count(tenant_id, update_data["audience_config"])
+            
+        # Optional: check valid status transitions
+        if "status" in update_data:
+            new_status = update_data["status"]
+            if new_status == CampaignStatus.SENDING or new_status == CampaignStatus.SCHEDULED:
+                if campaign.status not in (CampaignStatus.DRAFT, CampaignStatus.PAUSED):
+                    raise ValueError(f"Cannot transition to {new_status} from {campaign.status}")
+
+        for key, value in update_data.items():
+            setattr(campaign, key, value)
+            
+        self.db.commit()
+        self.db.refresh(campaign)
+        return campaign
+
+    def start_campaign(self, tenant_id: uuid.UUID, campaign_id: uuid.UUID) -> Campaign:
+        # Lock campaign to prevent concurrent starts
+        campaign = self.db.scalar(
+            select(Campaign)
+            .where(Campaign.tenant_id == tenant_id, Campaign.id == campaign_id)
+            .with_for_update()
+        )
+        if not campaign:
+            raise ValueError("Campaign not found")
+        
+        if campaign.status != CampaignStatus.DRAFT:
+            raise ValueError(f"Cannot start a campaign in {campaign.status} status")
+
+        # Resolve audience and populate recipients
+        tags = (campaign.audience_config or {}).get("tags", [])
+        if not tags:
+            raise ValueError("No tags configured for audience")
+
+        contact_ids = self.db.scalars(
+            select(func.distinct(ContactTag.contact_id)).where(
+                ContactTag.tenant_id == tenant_id,
+                ContactTag.tag_id.in_(tags)
+            )
+        ).all()
+
+        if not contact_ids:
+            raise ValueError("No matching contacts found for audience")
+
+        # Atomically populate campaign_recipients
+        recipients = []
+        for cid in contact_ids:
+            recipients.append(
+                CampaignRecipient(
+                    tenant_id=tenant_id,
+                    campaign_id=campaign.id,
+                    contact_id=cid,
+                    status=CampaignRecipientStatus.PENDING
+                )
+            )
+        
+        self.db.add_all(recipients)
+        campaign.status = CampaignStatus.SENDING
+        campaign.total_recipients = len(recipients)
+        self.db.commit()
+        
+        return campaign
+

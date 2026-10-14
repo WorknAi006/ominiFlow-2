@@ -41,6 +41,7 @@ class FakeMeta:
     network_down: bool = False
     download_timeout: bool = False
     sent: list[dict] = field(default_factory=list)
+    uploaded_media: list[httpx.Request] = field(default_factory=list)
 
     def add_media(self, media_id: str, item: FakeMedia) -> FakeMedia:
         item.url = item.url or f"https://{MEDIA_HOST}/whatsapp_business/attachments/?mid={media_id}&hash=sig"
@@ -99,6 +100,11 @@ class FakeMeta:
                 return self._error(status_code, message.replace("{token}", token), code)
             self.sent.append(json.loads(request.content))
             return httpx.Response(200, json={"messages": [{"id": f"wamid.T{uuid.uuid4().hex}"}]})
+
+        # Media upload (multipart): returns a new media id.
+        if request.method == "POST" and len(parts) == 2 and parts[1] == "media":
+            self.uploaded_media.append(request)
+            return httpx.Response(200, json={"id": f"media.T{uuid.uuid4().hex}"})
 
         if len(parts) == 2 and parts[1] == "message_templates":
             waba = parts[0]

@@ -32,9 +32,8 @@ from app.models.message import (
 from app.models.message_media import MediaStatus, MessageMedia
 from app.models.message_template import USABLE_TEMPLATE_STATUSES, MessageTemplate
 from app.models.automation import (
-    Automation, AutomationEdge, AutomationExecution, AutomationExecutionLog,
-    AutomationExecutionStatus, AutomationNode, AutomationNodeType, AutomationStatus, AutomationTrigger,
-    AutomationWorkerHeartbeat,
+    Automation, AutomationMatchType, AutomationRun, AutomationRunStatus,
+    AutomationThenMode, AutomationTrigger,
 )
 from app.models.oauth_state import OAuthState, OAuthStatus
 from app.models.tag import ContactTag, DEFAULT_TAG_COLOR, Tag
@@ -45,6 +44,14 @@ from app.models.custom_field import (
 )
 from app.models.keyword import Keyword
 from app.models.tenant_ai_config import TenantAiConfig
+from app.models.ecommerce import Product, Order, OrderItem, OrderStatus
+from app.models.campaign import Campaign, CampaignStatus
+from app.models.campaign_recipient import CampaignRecipient, CampaignRecipientStatus
+from app.models.knowledge_base import KnowledgeBase, KnowledgeDocument
+from app.models.user_session import UserSession
+from app.models.flow import Flow, FlowStatus
+from app.models.flow_session import FlowSession, FlowSessionStatus, FlowSessionWait
+from app.models.keyword_trigger import KeywordTrigger, KeywordTriggerAction, KeywordTriggerStatus
 
 
 __all__ = [
@@ -75,12 +82,30 @@ __all__ = [
     "MessageMedia",
     "USABLE_TEMPLATE_STATUSES",
     "MessageTemplate",
-    "Automation", "AutomationEdge", "AutomationNode", "AutomationExecution", "AutomationExecutionLog",
-    "AutomationStatus", "AutomationTrigger", "AutomationNodeType", "AutomationExecutionStatus",
-    "AutomationWorkerHeartbeat",
+    "Automation", "AutomationRun", "AutomationTrigger", "AutomationThenMode",
+    "AutomationMatchType", "AutomationRunStatus",
     "OAuthState", "OAuthStatus",
     "Tag", "ContactTag", "DEFAULT_TAG_COLOR",
     "CustomFieldDefinition", "ContactFieldValue", "CustomFieldType",
     "Keyword",
     "TenantAiConfig",
+    "Product",
+    "Order",
+    "OrderItem",
+    "OrderStatus",
+    "Campaign",
+    "CampaignStatus",
+    "CampaignRecipient",
+    "CampaignRecipientStatus",
+    "KnowledgeBase",
+    "KnowledgeDocument",
+    "UserSession",
+    "Flow",
+    "FlowStatus",
+    "FlowSession",
+    "FlowSessionStatus",
+    "FlowSessionWait",
+    "KeywordTrigger",
+    "KeywordTriggerAction",
+    "KeywordTriggerStatus",
 ]

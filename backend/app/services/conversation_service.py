@@ -389,9 +389,17 @@ def change_status(
     """
 
     conversation = get_conversation_model(db, tenant_id, conversation_id, for_update=True)
+    old_status = conversation.status
     conversation.status = status
 
     _commit(db)
+
+    # Fire "chat status changed" automation rules (best-effort).
+    if old_status != str(status):
+        from app.services import automation_service
+        db.refresh(conversation)
+        automation_service.on_chat_status_changed(db, conversation, old_status, str(status))
+
     return get_conversation(db, tenant_id, conversation_id)
 
 

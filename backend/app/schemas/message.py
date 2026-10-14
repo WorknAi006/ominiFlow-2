@@ -78,7 +78,62 @@ class TemplateMessageCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# ---- Interactive (buttons with header/footer) and media messages ----------
+# Used by the flow engine. WhatsApp Cloud API limits are enforced here and in
+# the provider; existing text/template sending is unaffected.
+MAX_BODY_LENGTH = 1024
+MAX_FOOTER_LENGTH = 60
+MAX_HEADER_TEXT_LENGTH = 60
+MAX_BUTTON_TITLE_LENGTH = 20
+
+
+class InteractiveHeader(BaseModel):
+    """Optional header for an interactive message: text or a media object."""
+
+    type: Literal["text", "image", "video", "document"]
+    text: str | None = Field(default=None, max_length=MAX_HEADER_TEXT_LENGTH)
+    # Storage key of a flow-uploaded asset (image/video/document headers).
+    media_key: str | None = None
+    filename: str | None = Field(default=None, max_length=255)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class InteractiveButton(BaseModel):
+    """A single button. `reply` = tappable quick reply (drives a branch);
+    `url` = open a link; `call` = phone number."""
+
+    id: str = Field(min_length=1, max_length=256)
+    title: str = Field(min_length=1, max_length=MAX_BUTTON_TITLE_LENGTH)
+    kind: Literal["reply", "url", "call"] = "reply"
+    url: str | None = Field(default=None, max_length=2000)
+    phone_number: str | None = Field(default=None, max_length=32)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class InteractiveMessageCreate(BaseModel):
+    type: Literal["interactive"]
+    body: str = Field(min_length=1, max_length=MAX_BODY_LENGTH)
+    header: InteractiveHeader | None = None
+    footer: str | None = Field(default=None, max_length=MAX_FOOTER_LENGTH)
+    buttons: list[InteractiveButton] = Field(default_factory=list, max_length=10)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class MediaMessageCreate(BaseModel):
+    type: Literal["media"]
+    media_type: Literal["image", "video", "audio", "document"]
+    # Storage key of a flow-uploaded asset.
+    media_key: str = Field(min_length=1)
+    caption: str | None = Field(default=None, max_length=MAX_BODY_LENGTH)
+    filename: str | None = Field(default=None, max_length=255)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 MessageCreate = Annotated[
-    TextMessageCreate | TemplateMessageCreate,
+    TextMessageCreate | TemplateMessageCreate | InteractiveMessageCreate | MediaMessageCreate,
     Field(discriminator="type"),
 ]

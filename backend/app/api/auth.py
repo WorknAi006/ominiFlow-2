@@ -1,10 +1,12 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from user_agents import parse as parse_user_agent
 
 from app.core.database import get_db
+from app.models.user_session import UserSession
 from app.core.security import create_access_token
 from app.schemas.auth import AuthResponse, LoginRequest, RegisterRequest
 from app.services.auth_service import (
@@ -73,6 +75,7 @@ def register(
     status_code=status.HTTP_200_OK,
 )
 def login(
+    request: Request,
     data: LoginRequest,
     db: Session = Depends(get_db),
 ):
@@ -98,11 +101,32 @@ def login(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Service temporarily unavailable.",
         )
+        
+    user_agent_str = request.headers.get("user-agent", "")
+    ip_address = request.client.host if request.client else None
+    
+    device_info = "Unknown Device"
+    if user_agent_str:
+        ua = parse_user_agent(user_agent_str)
+        browser = ua.browser.family if ua.browser.family != 'Other' else 'Unknown Browser'
+        os = ua.os.family if ua.os.family != 'Other' else 'Unknown OS'
+        device_info = f"{browser} on {os}"
+        
+    user_session = UserSession(
+        user_id=user.id,
+        ip_address=ip_address,
+        user_agent=user_agent_str,
+        device_info=device_info,
+    )
+    db.add(user_session)
+    db.commit()
+    db.refresh(user_session)
 
     access_token = create_access_token(
         subject=str(user.id),
         extra_claims={
             "tenant_id": str(tenant.id),
+            "session_id": str(user_session.id),
         },
     )
 

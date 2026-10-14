@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
 import Link from "next/link";
+import { useEcommerce } from "./use-ecommerce";
 
 const ChevronLeftIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><polyline points="15 18 9 12 15 6" /></svg>);
 
@@ -16,7 +16,16 @@ const SlidersIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="http:
 const GridIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /></svg>);
 
 export function EcommerceClient() {
-  const [activeMenu, setActiveMenu] = useState("Overview");
+  const {
+    activeMenu,
+    setActiveMenu,
+    overview,
+    products,
+    orders,
+    isLoading,
+    error,
+    handleUpdateOrderStatus,
+  } = useEcommerce();
 
   const menuItems = [
     { id: "Overview", title: "Overview", subtitle: "High-level view of your...", icon: StoreIcon },
@@ -37,16 +46,13 @@ export function EcommerceClient() {
             <h1 className="text-[26px] font-bold text-slate-800 leading-tight">E-commerce</h1>
             <p className="text-[15px] text-slate-500 mt-0.5">Manage your WhatsApp storefront, products, orders and payments</p>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 bg-[#e8f5e9] text-[#2e7d32] px-4 py-2 rounded-full font-semibold text-sm border border-[#c8e6c9]">
-              <ZapIcon className="w-4 h-4 fill-current" />
-              <span>461.12 AI Credits</span>
-            </div>
-            <button className="p-2.5 bg-white border border-slate-200 rounded-md text-slate-500 hover:bg-slate-50 shadow-sm">
-              <SettingsIcon className="w-5 h-5" />
-            </button>
-          </div>
         </div>
+
+        {error && (
+          <div className="mb-4 bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-lg text-sm">
+            {error}
+          </div>
+        )}
 
         {/* Main Content Area */}
         <div className="flex bg-white border border-slate-200 rounded-2xl min-h-[600px] overflow-hidden shadow-sm">
@@ -56,7 +62,7 @@ export function EcommerceClient() {
             <div className="p-5 flex items-center justify-between border-b border-transparent">
               <div>
                 <h2 className="font-bold text-slate-900 text-lg">E-commerce</h2>
-                <p className="text-sm text-slate-500">WhatsApp storefront & orders</p>
+                <p className="text-sm text-slate-500">Internal Storefront Data</p>
               </div>
               <button className="text-slate-400 hover:text-slate-600">
                 <ChevronLeftIcon className="w-5 h-5" />
@@ -93,46 +99,150 @@ export function EcommerceClient() {
           </div>
 
           {/* Right Content */}
-          <div className="flex-1 bg-white p-10">
-            {activeMenu === "Overview" && (
-              <div className="max-w-3xl">
-                <div className="mb-10">
-                  <h2 className="text-[26px] font-bold text-slate-900 mb-1">Ecommerce Manager</h2>
-                  <p className="text-[17px] text-slate-500">Manage your WhatsApp storefront, catalogs, products and orders.</p>
-                </div>
-
-                <div className="mb-10">
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">COMMERCE OVERVIEW</h3>
-                  <div className="border border-slate-200 rounded-2xl p-6 w-64 shadow-sm relative hover:shadow-md transition-shadow cursor-pointer bg-white">
-                    <div className="w-12 h-12 rounded-xl bg-[#e8f5e9] flex items-center justify-center text-[#00b050] mb-5">
-                      <GridIcon className="w-6 h-6" />
+          <div className="flex-1 bg-white p-10 overflow-y-auto max-h-[800px]">
+            {isLoading ? (
+               <div className="flex justify-center items-center h-64 text-slate-400">Loading...</div>
+            ) : (
+              <>
+                {activeMenu === "Overview" && (
+                  <div className="max-w-3xl">
+                    <div className="mb-10">
+                      <h2 className="text-[26px] font-bold text-slate-900 mb-1">Ecommerce Overview</h2>
+                      <p className="text-[17px] text-slate-500">High-level metrics for your storefront.</p>
                     </div>
-                    <div className="text-4xl font-black text-slate-900 mb-2">0</div>
-                    <div className="text-base font-bold text-slate-800 mb-2">Connected Catalogs</div>
-                    <p className="text-sm text-slate-500 leading-snug">
-                      Connect a Meta product catalog from your WhatsApp Business account.
-                    </p>
-                  </div>
-                </div>
 
-                <div>
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">CATALOGS</h3>
-                  <div className="bg-[#fff1f2] border border-[#fecdd3] rounded-xl p-5 text-rose-600 font-medium flex items-center">
-                    (#10) This operation can not be performed on SMB business type
+                    <div className="grid grid-cols-2 gap-6 mb-10">
+                      <div className="border border-slate-200 rounded-2xl p-6 shadow-sm bg-white">
+                        <div className="text-4xl font-black text-slate-900 mb-2">{overview?.total_products || 0}</div>
+                        <div className="text-base font-bold text-slate-800">Total Products</div>
+                      </div>
+                      <div className="border border-slate-200 rounded-2xl p-6 shadow-sm bg-white">
+                        <div className="text-4xl font-black text-slate-900 mb-2">{overview?.total_orders || 0}</div>
+                        <div className="text-base font-bold text-slate-800">Total Orders</div>
+                      </div>
+                      <div className="border border-slate-200 rounded-2xl p-6 shadow-sm bg-white">
+                        <div className="text-4xl font-black text-slate-900 mb-2">{overview?.pending_orders || 0}</div>
+                        <div className="text-base font-bold text-slate-800">Pending Orders</div>
+                      </div>
+                      <div className="border border-slate-200 rounded-2xl p-6 shadow-sm bg-white">
+                        <div className="text-4xl font-black text-slate-900 mb-2">${(overview?.total_revenue || 0).toFixed(2)}</div>
+                        <div className="text-base font-bold text-slate-800">Total Revenue</div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            )}
+                )}
 
-            {/* Dummy content for other tabs */}
-            {activeMenu !== "Overview" && (
-              <div className="h-full flex flex-col items-center justify-center text-center pb-20">
-                <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4">
-                  <SettingsIcon className="w-8 h-8 text-slate-300" />
-                </div>
-                <h3 className="text-xl font-bold text-slate-700 mb-2">{activeMenu} Module</h3>
-                <p className="text-slate-500 max-w-sm">This section is currently under development or not selected in the provided mockups.</p>
-              </div>
+                {activeMenu === "Products" && (
+                  <div className="max-w-4xl">
+                    <div className="mb-8 flex justify-between items-center">
+                      <div>
+                        <h2 className="text-[26px] font-bold text-slate-900 mb-1">Products</h2>
+                        <p className="text-[17px] text-slate-500">Manage your product catalog ({products.total} total)</p>
+                      </div>
+                    </div>
+
+                    {products.items.length === 0 ? (
+                      <div className="text-slate-500 text-center py-12 border border-slate-200 rounded-xl">No products found.</div>
+                    ) : (
+                      <div className="overflow-hidden border border-slate-200 rounded-xl">
+                        <table className="w-full text-left text-sm">
+                          <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                            <tr>
+                              <th className="px-6 py-4 font-semibold">Product Name</th>
+                              <th className="px-6 py-4 font-semibold">SKU</th>
+                              <th className="px-6 py-4 font-semibold">Price</th>
+                              <th className="px-6 py-4 font-semibold">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200">
+                            {products.items.map(p => (
+                              <tr key={p.id} className="hover:bg-slate-50">
+                                <td className="px-6 py-4 font-medium text-slate-900">{p.name}</td>
+                                <td className="px-6 py-4 text-slate-500">{p.sku || "-"}</td>
+                                <td className="px-6 py-4 text-slate-900">${p.price.toFixed(2)} {p.currency}</td>
+                                <td className="px-6 py-4">
+                                  {p.is_available ? (
+                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">In Stock</span>
+                                  ) : (
+                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">Out of Stock</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {activeMenu === "Orders" && (
+                  <div className="max-w-4xl">
+                    <div className="mb-8 flex justify-between items-center">
+                      <div>
+                        <h2 className="text-[26px] font-bold text-slate-900 mb-1">Orders</h2>
+                        <p className="text-[17px] text-slate-500">Track and manage orders ({orders.total} total)</p>
+                      </div>
+                    </div>
+
+                    {orders.items.length === 0 ? (
+                      <div className="text-slate-500 text-center py-12 border border-slate-200 rounded-xl">No orders found.</div>
+                    ) : (
+                      <div className="overflow-hidden border border-slate-200 rounded-xl">
+                        <table className="w-full text-left text-sm">
+                          <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
+                            <tr>
+                              <th className="px-6 py-4 font-semibold">Order Number</th>
+                              <th className="px-6 py-4 font-semibold">Date</th>
+                              <th className="px-6 py-4 font-semibold">Total</th>
+                              <th className="px-6 py-4 font-semibold">Status</th>
+                              <th className="px-6 py-4 font-semibold">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200">
+                            {orders.items.map(o => (
+                              <tr key={o.id} className="hover:bg-slate-50">
+                                <td className="px-6 py-4 font-medium text-slate-900">{o.order_number}</td>
+                                <td className="px-6 py-4 text-slate-500">{new Date(o.created_at).toLocaleDateString()}</td>
+                                <td className="px-6 py-4 text-slate-900">${o.total_amount.toFixed(2)} {o.currency}</td>
+                                <td className="px-6 py-4">
+                                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 capitalize">
+                                    {o.status.replace("_", " ")}
+                                  </span>
+                                </td>
+                                <td className="px-6 py-4">
+                                  <select 
+                                    className="text-sm border-slate-300 rounded-md shadow-sm"
+                                    value={o.status}
+                                    onChange={(e) => handleUpdateOrderStatus(o.id, e.target.value)}
+                                  >
+                                    <option value="pending">Pending</option>
+                                    <option value="processing">Processing</option>
+                                    <option value="shipped">Shipped</option>
+                                    <option value="delivered">Delivered</option>
+                                    <option value="cancelled">Cancelled</option>
+                                  </select>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Dummy content for other tabs */}
+                {!["Overview", "Products", "Orders"].includes(activeMenu) && (
+                  <div className="h-full flex flex-col items-center justify-center text-center pb-20">
+                    <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mb-4">
+                      <SettingsIcon className="w-8 h-8 text-slate-300" />
+                    </div>
+                    <h3 className="text-xl font-bold text-slate-700 mb-2">{activeMenu} Module</h3>
+                    <p className="text-slate-500 max-w-sm">This section is currently under development or not selected in the provided mockups.</p>
+                  </div>
+                )}
+              </>
             )}
           </div>
           

@@ -400,6 +400,136 @@ class WhatsAppProvider(ChannelProvider):
             credentials, phone_number_id, {"type": "template", "template": template}, to,
         )
 
+    # ---------- interactive / media (used by the flow engine) ----------
+
+    def upload_media(
+        self,
+        credentials: ProviderCredentials,
+        phone_number_id: str,
+        data: bytes,
+        content_type: str,
+        filename: str | None = None,
+    ) -> str:
+        """Upload a media file to WhatsApp and return its media id."""
+        with self._client() as client:
+            body = self._graph(
+                lambda: client.request(
+                    "POST",
+                    f"{phone_number_id}/media",
+                    access_token=credentials.access_token,
+                    data={"messaging_product": "whatsapp"},
+                    files={"file": (filename or "upload", data, content_type)},
+                )
+            )
+        media_id = body.get("id")
+        if not isinstance(media_id, str) or not media_id:
+            raise ProviderRequestError("WhatsApp did not return a media id.")
+        return media_id
+
+    @staticmethod
+    def _interactive_header(header: dict[str, Any]) -> dict[str, Any]:
+        """Build an interactive header object from a resolved header dict:
+        {"type":"text","text":...} or {"type":"image"/"video"/"document","id":media_id,"filename"?}."""
+        htype = header.get("type")
+        if htype == "text":
+            return {"type": "text", "text": str(header.get("text") or "")[:60]}
+        media_obj: dict[str, Any] = {"id": header["id"]}
+        if htype == "document" and header.get("filename"):
+            media_obj["filename"] = str(header["filename"])[:255]
+        return {"type": htype, htype: media_obj}
+
+    def send_interactive_message(
+        self,
+        credentials: ProviderCredentials,
+        phone_number_id: str,
+        to: str,
+        *,
+        body: str,
+        header: dict[str, Any] | None = None,
+        footer: str | None = None,
+        reply_buttons: list[dict[str, Any]] | None = None,
+        url_buttons: list[dict[str, Any]] | None = None,
+        call_buttons: list[dict[str, Any]] | None = None,
+        reply_to_external_id: str | None = None,
+    ) -> str:
+        """
+        Send an interactive message. WhatsApp cannot mix quick-reply buttons
+        with URL/call buttons in one message, so:
+          - with quick replies: an interactive "button" message (up to 3
+            tappable replies); any URL/call buttons are appended to the body
+            as text lines.
+          - with only a single URL button: an interactive "cta_url" message.
+          - otherwise: a plain text message (body + any call/url lines).
+        """
+        reply_buttons = list(reply_buttons or [])[:3]
+        url_buttons = list(url_buttons or [])
+        call_buttons = list(call_buttons or [])
+
+        def _extra_lines(urls: list[dict[str, Any]]) -> list[str]:
+            lines = [f"{b['title']}: {b['url']}" for b in urls if b.get("url")]
+            lines += [f"{b['title']}: {b['phone_number']}" for b in call_buttons if b.get("phone_number")]
+            return lines
+
+        if reply_buttons:
+            lines = _extra_lines(url_buttons)
+            body_text = body + ("\n\n" + "\n".join(lines) if lines else "")
+            interactive: dict[str, Any] = {
+                "type": "button",
+                "body": {"text": body_text[:1024]},
+                "action": {
+                    "buttons": [
+                        {"type": "reply", "reply": {"id": str(b["id"])[:256], "title": str(b["title"])[:20]}}
+                        for b in reply_buttons
+                    ]
+                },
+            }
+        elif url_buttons:
+            primary = url_buttons[0]
+            lines = _extra_lines(url_buttons[1:])
+            body_text = body + ("\n\n" + "\n".join(lines) if lines else "")
+            interactive = {
+                "type": "cta_url",
+                "body": {"text": body_text[:1024]},
+                "action": {
+                    "name": "cta_url",
+                    "parameters": {"display_text": str(primary["title"])[:20], "url": primary["url"]},
+                },
+            }
+        else:
+            lines = [f"{b['title']}: {b['phone_number']}" for b in call_buttons if b.get("phone_number")]
+            body_text = body + ("\n\n" + "\n".join(lines) if lines else "")
+            return self.send_text_message(credentials, phone_number_id, to, body_text, reply_to_external_id)
+
+        if header:
+            interactive["header"] = self._interactive_header(header)
+        if footer and footer.strip():
+            interactive["footer"] = {"text": footer[:60]}
+
+        return self._send_message(
+            credentials, phone_number_id, {"type": "interactive", "interactive": interactive}, to, reply_to_external_id,
+        )
+
+    def send_media_message(
+        self,
+        credentials: ProviderCredentials,
+        phone_number_id: str,
+        to: str,
+        media_type: str,
+        media_id: str,
+        caption: str | None = None,
+        filename: str | None = None,
+        reply_to_external_id: str | None = None,
+    ) -> str:
+        """Send an image/video/audio/document by uploaded media id."""
+        media_obj: dict[str, Any] = {"id": media_id}
+        if caption and caption.strip() and media_type in ("image", "video", "document"):
+            media_obj["caption"] = caption[:1024]
+        if media_type == "document" and filename:
+            media_obj["filename"] = str(filename)[:255]
+        return self._send_message(
+            credentials, phone_number_id, {"type": media_type, media_type: media_obj}, to, reply_to_external_id,
+        )
+
     def _send_message(
         self,
         credentials: ProviderCredentials,

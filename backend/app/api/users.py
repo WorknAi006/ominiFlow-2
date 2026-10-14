@@ -23,6 +23,9 @@ from app.schemas.team import (
     TeamMemberResponse,
     UpdateTeamMemberRequest,
 )
+from app.api.dependencies import TokenPayload
+from app.schemas.user_session import UserSessionResponse
+from app.models.user_session import UserSession
 from app.services import user_service
 from app.services.user_service import (
     AlreadyMemberError,
@@ -105,6 +108,83 @@ def list_members(
         return user_service.list_team_members(
             db, tenant.id, page, page_size, search or None,
         )
+
+
+# =========================
+# SESSIONS
+# =========================
+
+@router.get(
+    "/me/sessions",
+    response_model=list[UserSessionResponse],
+)
+def list_sessions(
+    user: CurrentUser,
+    payload: TokenPayload,
+    db: DbSession,
+):
+    sessions = db.query(UserSession).filter(
+        UserSession.user_id == user.id,
+        UserSession.is_active == True,
+    ).order_by(UserSession.last_active_at.desc()).all()
+    
+    current_session_id = payload.get("session_id")
+    
+    response = []
+    for s in sessions:
+        r = UserSessionResponse.model_validate(s)
+        r.is_current = str(s.id) == current_session_id
+        response.append(r)
+        
+    return response
+
+
+@router.delete(
+    "/me/sessions",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def revoke_all_other_sessions(
+    user: CurrentUser,
+    payload: TokenPayload,
+    db: DbSession,
+):
+    current_session_id = payload.get("session_id")
+    
+    query = db.query(UserSession).filter(
+        UserSession.user_id == user.id,
+        UserSession.is_active == True,
+    )
+    
+    if current_session_id:
+        query = query.filter(UserSession.id != current_session_id)
+        
+    sessions = query.all()
+    for s in sessions:
+        s.is_active = False
+        
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/me/sessions/{session_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def revoke_session(
+    session_id: uuid.UUID,
+    user: CurrentUser,
+    db: DbSession,
+):
+    user_session = db.query(UserSession).filter(
+        UserSession.id == session_id,
+        UserSession.user_id == user.id,
+    ).first()
+    
+    if user_session:
+        user_session.is_active = False
+        db.commit()
+        
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # =========================

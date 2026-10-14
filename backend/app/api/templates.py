@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, Query, status
 
 from app.api.dependencies import CurrentTenant, DbSession, require_permission
 from app.api.errors import service_errors
-from app.schemas.template import TemplateListResponse, TemplateResponse, TemplateSyncResponse
+from app.schemas.template import LocalTemplateCreate, TemplateListResponse, TemplateResponse, TemplateSyncResponse
 from app.services import template_service
 from app.services.template_service import (
     ChannelNotFoundError,
+    TemplateAlreadyExistsError,
     TemplateChannelNotConnectedError,
     TemplateCredentialsError,
     TemplateNotConfiguredError,
@@ -21,12 +22,24 @@ router = APIRouter(tags=["Templates"])
 ERRORS = {
     ChannelNotFoundError: status.HTTP_404_NOT_FOUND,
     TemplateNotFoundError: status.HTTP_404_NOT_FOUND,
+    TemplateAlreadyExistsError: status.HTTP_409_CONFLICT,
     UnsupportedTemplateChannelError: status.HTTP_422_UNPROCESSABLE_CONTENT,
     TemplateChannelNotConnectedError: status.HTTP_409_CONFLICT,
     TemplateSyncFailedError: status.HTTP_502_BAD_GATEWAY,
     TemplateCredentialsError: status.HTTP_503_SERVICE_UNAVAILABLE,
     TemplateNotConfiguredError: status.HTTP_503_SERVICE_UNAVAILABLE,
 }
+
+
+@router.post(
+    "/templates",
+    response_model=TemplateResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("template:sync"))],
+)
+def create_local_template(data: LocalTemplateCreate, tenant: CurrentTenant, db: DbSession):
+    with service_errors(ERRORS):
+        return template_service.create_local_template(db, tenant.id, data)
 
 
 @router.get(

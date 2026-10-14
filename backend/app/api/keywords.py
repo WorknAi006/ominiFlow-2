@@ -1,5 +1,5 @@
 import uuid
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Query, status
 
 from app.api.dependencies import CurrentTenant, CurrentUser, DbSession
 from app.schemas.keyword import KeywordCreate, KeywordResponse, KeywordUpdate
@@ -12,9 +12,12 @@ def list_keywords_route(
     current_user: CurrentUser,
     tenant: CurrentTenant,
     session: DbSession,
+    search: str | None = Query(None, max_length=255),
+    match_type: str | None = Query(None),
+    is_active: bool | None = Query(None),
 ):
-    """List all keywords for the tenant."""
-    return keyword_service.list_keywords(session, tenant.id)
+    """List keywords for the tenant, with optional search and filters."""
+    return keyword_service.list_keywords(session, tenant.id, (search or "").strip() or None, match_type, is_active)
 
 @router.get("/{keyword_id}", response_model=KeywordResponse)
 def get_keyword_route(

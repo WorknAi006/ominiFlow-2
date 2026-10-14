@@ -44,11 +44,24 @@ async function handle(request: NextRequest, context: RouteContext, method: Proxy
   const url = backendApiUrl(target.backendPath);
   url.search = target.query.toString();
 
+  // Forward a JSON body for writes that carry one (e.g. create local template).
+  let body: string | undefined;
+  const headers: Record<string, string> = { Accept: "application/json", Authorization: `Bearer ${token}` };
+  if (target.method === "POST") {
+    const raw = await request.text();
+    if (raw) {
+      try { JSON.parse(raw); } catch { return NextResponse.json({ error: "Invalid JSON request." }, { status: 400 }); }
+      body = raw;
+      headers["Content-Type"] = "application/json";
+    }
+  }
+
   let upstream: Response;
   try {
     upstream = await fetch(url, {
       method: target.method,
-      headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+      headers,
+      ...(body ? { body } : {}),
       cache: "no-store",
       signal: request.signal,
     });

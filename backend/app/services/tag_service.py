@@ -148,11 +148,17 @@ def set_contact_tags(db: Session, tenant_id: uuid.UUID, contact_id: uuid.UUID, t
     from app.services import contact_service
     contact_service.get_contact_model(db, tenant_id, contact_id)  # 404 if not this tenant
     valid = validate_tag_ids(db, tenant_id, tag_ids)
+    existing = {
+        r[0] for r in db.query(ContactTag.tag_id).filter(
+            ContactTag.tenant_id == tenant_id, ContactTag.contact_id == contact_id,
+        ).all()
+    }
     db.query(ContactTag).filter(
         ContactTag.tenant_id == tenant_id, ContactTag.contact_id == contact_id,
     ).delete(synchronize_session=False)
     _add_links(db, tenant_id, [contact_id], valid)
     _commit(db)
+    _fire_tag_added(db, tenant_id, contact_id, [t for t in valid if t not in existing])
     return contact_service.get_contact(db, tenant_id, contact_id)
 
 
@@ -170,4 +176,15 @@ def bulk_apply_tags(
     _remove_links(db, tenant_id, owned, remove)
     _add_links(db, tenant_id, owned, add)
     _commit(db)
+    if add:
+        for contact_id in owned:
+            _fire_tag_added(db, tenant_id, contact_id, add)
     return len(owned)
+
+
+def _fire_tag_added(db: Session, tenant_id: uuid.UUID, contact_id: uuid.UUID, added_tag_ids: list[uuid.UUID]) -> None:
+    """Best-effort: run 'tag added to contact' automation rules."""
+    if not added_tag_ids:
+        return
+    from app.services import automation_service
+    automation_service.on_tags_added(db, tenant_id, contact_id, added_tag_ids)

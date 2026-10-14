@@ -1,545 +1,533 @@
-"""Tenant-scoped automation definitions and safe flow validation."""
+"""
+Rule-based automations: WHEN (trigger) / IF (conditions) / THEN (actions).
+
+A rule fires on its trigger event (new contact, tag added, chat status
+changed, chat stuck in a mode). Its conditions are evaluated against the
+event's contact/conversation and, when they pass (match all or any), the
+ordered actions run as real mutations. Every evaluation is recorded as an
+``AutomationRun`` for monitoring.
+
+Dispatch is best-effort: a broken rule logs a failed run and is swallowed so
+it can never break contact creation, tagging or a status change.
+"""
+import logging
 import uuid
-from collections import defaultdict, deque
-from datetime import datetime, timezone
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import or_
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import func
+from sqlalchemy.orm import Session
 
-from app.core.config import settings
-from app.models import ChannelConnection, ChannelStatus, ChannelType, ConversationStatus, MessageTemplate, TenantMembership, User
-from app.models.automation import (
-    Automation, AutomationEdge, AutomationExecution, AutomationExecutionLog,
-    AutomationExecutionStatus, AutomationNode, AutomationNodeType, AutomationStatus, AutomationTrigger,
+from app.models import (
+    Automation, AutomationRun, AutomationRunStatus, AutomationThenMode,
+    AutomationTrigger, Contact, ContactFieldValue, ContactTag,
+    Conversation, ConversationStatus, CustomFieldDefinition, Tag,
 )
+from app.models.tag import DEFAULT_TAG_COLOR
 from app.schemas.automation import (
-    AutomationCreate, AutomationEdgeInput, AutomationFlowSave, AutomationNodeCreate,
-    AutomationNodeUpdate, AutomationUpdate, ValidationIssue,
+    ACTION_TYPES, CONDITION_FIELDS, CONDITION_OPERATORS,
+    AutomationCreate, AutomationUpdate,
 )
-from app.services import template_service
-from app.services.template_service import is_usable
-from app.services.automation_execution_service import worker_health
-from app.schemas.message import TemplateMessageCreate
+
+logger = logging.getLogger("app.services.automation")
 
 
-class AutomationError(Exception):
-    pass
+class AutomationNotFoundError(Exception):
+    """No such automation for this tenant."""
 
 
-class AutomationNotFoundError(AutomationError):
-    pass
+# --------------------------------------------------------------------------
+# CRUD
+# --------------------------------------------------------------------------
 
-
-class AutomationConflictError(AutomationError):
-    pass
-
-
-class AutomationFlowLockedError(AutomationError):
-    pass
-
-
-class AutomationInvalidFlowError(AutomationError):
-    def __init__(self, issues: list[ValidationIssue]):
-        self.issues = issues
-        super().__init__("Flow validation failed.")
-
-
-def get_model(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID, *, for_update: bool = False) -> Automation:
-    query = db.query(Automation).filter(Automation.id == automation_id, Automation.tenant_id == tenant_id)
+def _get(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID, for_update: bool = False) -> Automation:
+    q = select(Automation).where(Automation.tenant_id == tenant_id, Automation.id == automation_id)
     if for_update:
-        query = query.with_for_update()
-    value = query.first()
-    if value is None:
+        q = q.with_for_update()
+    row = db.execute(q).scalar_one_or_none()
+    if row is None:
         raise AutomationNotFoundError("Automation not found.")
-    return value
+    return row
 
 
-def _editable(value: Automation) -> None:
-    if value.status == AutomationStatus.ACTIVE:
-        raise AutomationFlowLockedError("Pause this automation before changing its flow.")
-    if value.status == AutomationStatus.ARCHIVED:
-        raise AutomationFlowLockedError("Archived automations cannot be changed.")
-
-
-def list_automations(db: Session, tenant_id: uuid.UUID, page: int, page_size: int, status: str | None, search: str | None):
-    query = db.query(Automation).filter(Automation.tenant_id == tenant_id)
-    if status:
-        query = query.filter(Automation.status == status)
+def list_automations(db: Session, tenant_id: uuid.UUID, page: int, page_size: int, search: str | None) -> dict[str, Any]:
+    base = select(Automation).where(Automation.tenant_id == tenant_id)
     if search:
-        escaped = search.replace("%", "\\%").replace("_", "\\_")
-        pattern = f"%{escaped}%"
-        query = query.filter(or_(Automation.name.ilike(pattern, escape="\\"), Automation.description.ilike(pattern, escape="\\")))
-    total = query.count()
-    items = query.order_by(Automation.updated_at.desc(), Automation.id).offset((page - 1) * page_size).limit(page_size).all()
-    return {"items": items, "total": total, "page": page, "page_size": page_size}
+        base = base.where(Automation.name.ilike(f"%{search}%"))
+    total = db.execute(select(func.count()).select_from(base.subquery())).scalar_one()
+    rows = db.execute(
+        base.order_by(Automation.runs_first.asc(), Automation.created_at.desc())
+        .offset((page - 1) * page_size).limit(page_size)
+    ).scalars().all()
+    return {"items": rows, "total": total, "page": page, "page_size": page_size}
 
 
-def _nodes_edges(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID):
-    nodes = db.query(AutomationNode).filter_by(tenant_id=tenant_id, automation_id=automation_id).order_by(AutomationNode.sort_order, AutomationNode.id).all()
-    edges = db.query(AutomationEdge).filter_by(tenant_id=tenant_id, automation_id=automation_id).order_by(AutomationEdge.id).all()
-    return nodes, edges
+def get_automation(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID) -> Automation:
+    return _get(db, tenant_id, automation_id)
 
 
-def get_detail(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID):
-    automation = get_model(db, tenant_id, automation_id)
-    nodes, edges = _nodes_edges(db, tenant_id, automation_id)
-    return {"automation": automation, "nodes": nodes, "edges": edges}
-
-
-def create_automation(db: Session, tenant_id: uuid.UUID, actor: User, data: AutomationCreate) -> Automation:
-    automation = Automation(tenant_id=tenant_id, name=data.name, description=data.description, trigger_type=data.trigger_type, created_by_user_id=actor.id)
-    db.add(automation)
-    db.flush()
-    db.add(AutomationNode(
-        tenant_id=tenant_id, automation_id=automation.id, node_type=AutomationNodeType.TRIGGER_MESSAGE,
-        name="Inbound WhatsApp Message", config={}, sort_order=0,
-    ))
+def create_automation(db: Session, tenant_id: uuid.UUID, user, data: AutomationCreate) -> Automation:
+    row = Automation(
+        tenant_id=tenant_id,
+        name=data.name,
+        trigger_type=data.trigger_type.value,
+        trigger_config=_clean_trigger_config(data.trigger_type.value, data.trigger_config),
+        match_type=data.match_type.value,
+        conditions=[c.model_dump() for c in data.conditions],
+        then_mode=data.then_mode.value,
+        flow_ref=data.flow_ref,
+        actions=[a.model_dump() for a in data.actions],
+        is_active=data.is_active,
+        runs_first=data.runs_first,
+        created_by_user_id=getattr(user, "id", None),
+    )
+    db.add(row)
     db.commit()
-    db.refresh(automation)
-    return automation
+    db.refresh(row)
+    return row
 
 
 def update_automation(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID, data: AutomationUpdate) -> Automation:
-    automation = get_model(db, tenant_id, automation_id, for_update=True)
-    _editable(automation)
-    for key, value in data.model_dump(exclude_unset=True).items():
-        setattr(automation, key, value)
+    row = _get(db, tenant_id, automation_id, for_update=True)
+    changes = data.model_dump(exclude_unset=True)
+    if "trigger_type" in changes:
+        row.trigger_type = data.trigger_type.value
+    if "trigger_config" in changes:
+        row.trigger_config = _clean_trigger_config(row.trigger_type, changes["trigger_config"] or {})
+    if "match_type" in changes:
+        row.match_type = data.match_type.value
+    if "conditions" in changes:
+        row.conditions = [c.model_dump() for c in (data.conditions or [])]
+    if "then_mode" in changes:
+        row.then_mode = data.then_mode.value
+    if "flow_ref" in changes:
+        row.flow_ref = changes["flow_ref"]
+    if "actions" in changes:
+        row.actions = [a.model_dump() for a in (data.actions or [])]
+    if "name" in changes:
+        row.name = changes["name"]
+    if "is_active" in changes:
+        row.is_active = changes["is_active"]
+    if "runs_first" in changes:
+        row.runs_first = changes["runs_first"]
     db.commit()
-    db.refresh(automation)
-    return automation
+    db.refresh(row)
+    return row
 
 
-def archive_automation(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID) -> Automation:
-    automation = get_model(db, tenant_id, automation_id, for_update=True)
-    automation.status = AutomationStatus.ARCHIVED
+def delete_automation(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID) -> None:
+    row = _get(db, tenant_id, automation_id, for_update=True)
+    db.delete(row)
     db.commit()
-    db.refresh(automation)
-    return automation
 
 
-def _node_config_issues(db: Session, tenant_id: uuid.UUID, nodes: list[AutomationNode], automation: Automation) -> list[ValidationIssue]:
-    issues: list[ValidationIssue] = []
-    trigger = next((n for n in nodes if n.node_type == AutomationNodeType.TRIGGER_MESSAGE), None)
-    trigger_channel_id = (trigger.config or {}).get("channel_connection_id") if trigger else None
-    channel = None
-    if trigger_channel_id:
+def set_active(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID, active: bool) -> Automation:
+    row = _get(db, tenant_id, automation_id, for_update=True)
+    row.is_active = active
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def _clean_trigger_config(trigger_type: str, config: dict[str, Any]) -> dict[str, Any]:
+    if trigger_type == AutomationTrigger.CHAT_STUCK_IN_MODE.value:
+        hours = config.get("hours", 1)
         try:
-            channel_uuid = uuid.UUID(str(trigger_channel_id))
-        except ValueError:
-            channel_uuid = None
-        if channel_uuid:
-            # Any connected channel can trigger an inbound-message flow
-            # (WhatsApp, Web Chat, ...); channel-specific action nodes still
-            # validate their own requirements below.
-            channel = db.query(ChannelConnection).filter(
-                ChannelConnection.id == channel_uuid, ChannelConnection.tenant_id == tenant_id,
-                ChannelConnection.is_deleted.is_(False),
-                ChannelConnection.is_active.is_(True), ChannelConnection.status == ChannelStatus.CONNECTED,
-            ).first()
-    if trigger and not channel:
-        issues.append(ValidationIssue(code="trigger_channel_required", message="Choose a connected channel for the inbound message trigger.", node_id=trigger.id))
-
-    for node in nodes:
-        config = node.config or {}
-        if node.node_type == AutomationNodeType.MESSAGE_CONTAINS:
-            value = config.get("value")
-            if not isinstance(value, str) or not value.strip() or len(value) > 500:
-                issues.append(ValidationIssue(code="condition_value_required", message="Message Contains needs a value up to 500 characters.", node_id=node.id))
-            if "case_sensitive" in config and not isinstance(config["case_sensitive"], bool):
-                issues.append(ValidationIssue(code="condition_case_invalid", message="Case sensitivity must be true or false.", node_id=node.id))
-            operator = config.get("operator", "contains")
-            if not isinstance(operator, str) or operator not in {"contains", "equals", "starts_with", "ends_with"}:
-                issues.append(ValidationIssue(code="condition_operator_invalid", message="Choose a supported text comparison.", node_id=node.id))
-        elif node.node_type == AutomationNodeType.SEND_TEXT:
-            value = config.get("text")
-            if not isinstance(value, str) or not value.strip() or len(value) > 4096:
-                issues.append(ValidationIssue(code="send_text_required", message="Send Text needs a message from 1 to 4096 characters.", node_id=node.id))
-        elif node.node_type == AutomationNodeType.SEND_TEMPLATE:
-            try:
-                template_id = uuid.UUID(str(config.get("template_id", "")))
-            except ValueError:
-                template_id = None
-            template = db.query(MessageTemplate).filter(
-                MessageTemplate.id == template_id, MessageTemplate.tenant_id == tenant_id,
-                MessageTemplate.is_active.is_(True),
-            ).first() if template_id else None
-            if template is None or not is_usable(template):
-                issues.append(ValidationIssue(code="template_invalid", message="Select an active, approved WhatsApp template from this workspace.", node_id=node.id))
-            elif channel and template.channel_connection_id != channel.id:
-                issues.append(ValidationIssue(code="template_channel_mismatch", message="The selected template must belong to the trigger channel.", node_id=node.id))
-            elif template is not None:
-                try:
-                    send_data = TemplateMessageCreate(
-                        type="template", template_name=template.name, language=template.language,
-                        components=config.get("components", []),
-                    )
-                    template_service.build_send_components(template, send_data.components)
-                except Exception:
-                    issues.append(ValidationIssue(code="template_variables_invalid", message="Provide valid values for all required template variables.", node_id=node.id))
-            if not isinstance(config.get("components", []), list):
-                issues.append(ValidationIssue(code="template_variables_invalid", message="Template variable configuration is invalid.", node_id=node.id))
-        elif node.node_type == AutomationNodeType.ASSIGN_CONVERSATION:
-            try:
-                user_id = uuid.UUID(str(config.get("user_id", "")))
-            except ValueError:
-                user_id = None
-            member = db.query(TenantMembership.id).join(User, User.id == TenantMembership.user_id).filter(
-                TenantMembership.tenant_id == tenant_id, TenantMembership.user_id == user_id,
-                TenantMembership.status == "active", User.is_active.is_(True),
-            ).first() if user_id else None
-            if not member:
-                issues.append(ValidationIssue(code="assignee_invalid", message="Select an active member of this workspace.", node_id=node.id))
-        elif node.node_type == AutomationNodeType.CHANGE_CONVERSATION_STATUS:
-            if not isinstance(config.get("status"), str) or config.get("status") not in {item.value for item in ConversationStatus}:
-                issues.append(ValidationIssue(code="conversation_status_invalid", message="Choose a supported conversation status.", node_id=node.id))
-        elif node.node_type == AutomationNodeType.DELAY:
-            duration, unit = config.get("duration"), config.get("unit")
-            if not isinstance(duration, int) or isinstance(duration, bool) or duration < 1 or duration > 720:
-                issues.append(ValidationIssue(code="delay_duration_invalid", message="Delay must be between 1 and 720 units.", node_id=node.id))
-            if not isinstance(unit, str) or unit not in {"seconds", "minutes", "hours"}:
-                issues.append(ValidationIssue(code="delay_unit_invalid", message="Choose seconds, minutes, or hours.", node_id=node.id))
-        elif node.node_type == AutomationNodeType.BUSINESS_HOURS:
-            try:
-                ZoneInfo(str(config.get("timezone", "")))
-            except (ZoneInfoNotFoundError, ValueError):
-                issues.append(ValidationIssue(code="business_timezone_invalid", message="Choose a valid IANA timezone.", node_id=node.id))
-            days = config.get("working_days")
-            if not isinstance(days, list) or not days or any(not isinstance(day, int) or isinstance(day, bool) or day < 0 or day > 6 for day in days) or len(set(days)) != len(days):
-                issues.append(ValidationIssue(code="business_days_invalid", message="Select one or more unique working days.", node_id=node.id))
-            try:
-                start = datetime.strptime(str(config.get("start_time", "")), "%H:%M").time()
-                end = datetime.strptime(str(config.get("end_time", "")), "%H:%M").time()
-                if start == end:
-                    raise ValueError
-            except ValueError:
-                issues.append(ValidationIssue(code="business_time_invalid", message="Set valid, different start and end times in 24-hour format.", node_id=node.id))
-    return issues
+            hours = max(1, min(168, int(hours)))
+        except (TypeError, ValueError):
+            hours = 1
+        return {"mode": str(config.get("mode", "bot"))[:40], "hours": hours}
+    return {}
 
 
-def validate_flow(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID) -> list[ValidationIssue]:
-    automation = get_model(db, tenant_id, automation_id)
-    nodes, edges = _nodes_edges(db, tenant_id, automation_id)
-    issues: list[ValidationIssue] = []
-    if len(nodes) > settings.automation_max_nodes:
-        issues.append(ValidationIssue(code="node_limit", message=f"A flow may contain at most {settings.automation_max_nodes} steps."))
-    triggers = [node for node in nodes if node.node_type == AutomationNodeType.TRIGGER_MESSAGE]
-    if len(triggers) != 1:
-        issues.append(ValidationIssue(code="trigger_count", message="A valid flow must have exactly one trigger."))
-    if not any(node.node_type in {
-        AutomationNodeType.SEND_TEXT, AutomationNodeType.SEND_TEMPLATE,
-        AutomationNodeType.ASSIGN_CONVERSATION, AutomationNodeType.CHANGE_CONVERSATION_STATUS,
-    } for node in nodes):
-        issues.append(ValidationIssue(code="action_required", message="Add at least one action."))
-    issues.extend(_node_config_issues(db, tenant_id, nodes, automation))
+# --------------------------------------------------------------------------
+# Options catalogue (served to the builder UI)
+# --------------------------------------------------------------------------
 
-    ids = {node.id for node in nodes}
-    outgoing: dict[uuid.UUID, list[AutomationEdge]] = defaultdict(list)
-    incoming: dict[uuid.UUID, list[AutomationEdge]] = defaultdict(list)
-    for edge in edges:
-        if edge.source_node_id not in ids or edge.target_node_id not in ids:
-            issues.append(ValidationIssue(code="edge_invalid", message="Every connection must point to a node in this flow."))
-            continue
-        outgoing[edge.source_node_id].append(edge)
-        incoming[edge.target_node_id].append(edge)
-        source = next((node for node in nodes if node.id == edge.source_node_id), None)
-        if edge.branch and (source is None or source.node_type not in (AutomationNodeType.MESSAGE_CONTAINS, AutomationNodeType.BUSINESS_HOURS)):
-            issues.append(ValidationIssue(code="edge_branch_invalid", message="Only a condition can have true/false branches.", node_id=edge.source_node_id))
-    for node_id, rows in outgoing.items():
-        node = next((item for item in nodes if item.id == node_id), None)
-        if node and node.node_type in (AutomationNodeType.MESSAGE_CONTAINS, AutomationNodeType.BUSINESS_HOURS):
-            if any(edge.branch not in ("true", "false") for edge in rows):
-                issues.append(ValidationIssue(code="condition_branch_required", message="Condition connections must be labeled true or false.", node_id=node_id))
-        elif len(rows) > 1:
-            issues.append(ValidationIssue(code="multiple_outputs", message="Connect this step to at most one next step.", node_id=node_id))
-
-    if len(triggers) == 1:
-        start = triggers[0].id
-        reachable: set[uuid.UUID] = set()
-        queue = deque([start])
-        while queue:
-            current = queue.popleft()
-            if current in reachable:
-                continue
-            reachable.add(current)
-            queue.extend(edge.target_node_id for edge in outgoing[current])
-        for node in nodes:
-            if node.id != start and node.id not in reachable:
-                issues.append(ValidationIssue(code="node_unreachable", message="Every flow step must be connected to the trigger.", node_id=node.id))
-
-        indegree = {node.id: 0 for node in nodes}
-        for edge in edges:
-            if edge.source_node_id in ids and edge.target_node_id in ids:
-                indegree[edge.target_node_id] += 1
-        ready = deque(node_id for node_id, count in indegree.items() if count == 0)
-        visited = 0
-        while ready:
-            node_id = ready.popleft()
-            visited += 1
-            for edge in outgoing[node_id]:
-                indegree[edge.target_node_id] -= 1
-                if indegree[edge.target_node_id] == 0:
-                    ready.append(edge.target_node_id)
-        if visited != len(nodes):
-            issues.append(ValidationIssue(code="flow_cycle", message="Flow connections cannot contain a cycle."))
-    return issues
+_TRIGGER_LABELS = {
+    "new_contact_created": "New contact created",
+    "tag_added_to_contact": "Tag added to contact",
+    "chat_status_changed": "Chat status changed",
+    "chat_stuck_in_mode": "Chat stuck in a mode for N hours",
+}
+_FIELD_LABELS = {
+    "existing_contact": "Existing contact",
+    "contact_tags": "Contact tags",
+    "source": "Source",
+    "chat_status": "Chat status",
+    "chat_mode": "Chat mode",
+    "assigned_agent": "Assigned agent",
+    "has_agent_assigned": "Has agent assigned",
+    "account": "account",
+}
+_OPERATOR_LABELS = {
+    "is": "is", "is_not": "is not", "contains": "contains",
+    "doesnt_contain": "doesn't contain", "starts_with": "starts with",
+    "ends_with": "ends with", "has_any": "has any",
+    "has_value": "has value", "has_no_value": "has no value",
+}
+_ACTION_SPECS = {
+    "add_tags": ("Add tags", [{"key": "value", "label": "Tag IDs or names, comma-separated", "type": "text"}]),
+    "remove_tags": ("Remove tags", [{"key": "value", "label": "Tag IDs or names, comma-separated", "type": "text"}]),
+    "set_custom_field": ("Set custom field", [
+        {"key": "key", "label": "Field key", "type": "text"},
+        {"key": "value", "label": "Value", "type": "text"},
+    ]),
+    "clear_custom_field": ("Clear custom field", [{"key": "key", "label": "Field key", "type": "text"}]),
+    "subscribe_to_drip": ("Subscribe to drip", [{"key": "value", "label": "Drip name", "type": "text"}]),
+    "unsubscribe_from_drip": ("Unsubscribe from drip", [{"key": "value", "label": "Drip name", "type": "text"}]),
+    "append_to_google_sheet": ("Append to Google Sheet", [{"key": "value", "label": "Sheet URL or ID", "type": "text"}]),
+    "set_chat_status": ("Set chat status", [{"key": "value", "label": "Status", "type": "chat_status"}]),
+    "transfer_to_bot": ("Transfer to bot", [{"key": "value", "label": "Bot name (optional)", "type": "text"}]),
+}
 
 
-def save_flow(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID, data: AutomationFlowSave) -> None:
-    automation = get_model(db, tenant_id, automation_id, for_update=True)
-    _editable(automation)
-    supplied_ids = [node.id for node in data.nodes]
-    if len(set(supplied_ids)) != len(supplied_ids):
-        raise AutomationConflictError("Each flow step must have a unique id.")
-    valid_ids = set(supplied_ids)
-    for edge in data.edges:
-        if edge.source_node_id not in valid_ids or edge.target_node_id not in valid_ids or edge.source_node_id == edge.target_node_id:
-            raise AutomationConflictError("A connection references a missing or identical flow step.")
-
-    try:
-        existing = {node.id: node for node in db.query(AutomationNode).filter_by(tenant_id=tenant_id, automation_id=automation_id).all()}
-        db.query(AutomationEdge).filter_by(tenant_id=tenant_id, automation_id=automation_id).delete(synchronize_session=False)
-        for node_id in set(existing) - valid_ids:
-            db.query(AutomationNode).filter_by(id=node_id, tenant_id=tenant_id, automation_id=automation_id).delete(synchronize_session=False)
-        for item in data.nodes:
-            node = existing.get(item.id)
-            if node is None:
-                node = AutomationNode(id=item.id, tenant_id=tenant_id, automation_id=automation_id)
-                db.add(node)
-            node.node_type = item.node_type
-            node.name = item.name
-            node.config = item.config
-            node.sort_order = item.sort_order
-        db.flush()
-        for edge in data.edges:
-            db.add(AutomationEdge(
-                tenant_id=tenant_id, automation_id=automation_id,
-                source_node_id=edge.source_node_id, target_node_id=edge.target_node_id, branch=edge.branch,
-            ))
-        automation.version += 1
-        db.commit()
-    except (IntegrityError, SQLAlchemyError):
-        db.rollback()
-        raise AutomationConflictError("The flow could not be saved. Check its connections and try again.") from None
-
-
-def create_node(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID, data: AutomationNodeCreate) -> AutomationNode:
-    automation = get_model(db, tenant_id, automation_id, for_update=True)
-    _editable(automation)
-    node = AutomationNode(tenant_id=tenant_id, automation_id=automation_id, **data.model_dump())
-    db.add(node)
-    automation.version += 1
-    db.commit()
-    db.refresh(node)
-    return node
-
-
-def update_node(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID, node_id: uuid.UUID, data: AutomationNodeUpdate) -> AutomationNode:
-    automation = get_model(db, tenant_id, automation_id, for_update=True)
-    _editable(automation)
-    node = db.query(AutomationNode).filter_by(id=node_id, automation_id=automation_id, tenant_id=tenant_id).first()
-    if node is None:
-        raise AutomationNotFoundError("Flow step not found.")
-    for key, value in data.model_dump(exclude_unset=True).items():
-        setattr(node, key, value)
-    automation.version += 1
-    db.commit()
-    db.refresh(node)
-    return node
-
-
-def delete_node(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID, node_id: uuid.UUID) -> None:
-    automation = get_model(db, tenant_id, automation_id, for_update=True)
-    _editable(automation)
-    node = db.query(AutomationNode).filter_by(id=node_id, automation_id=automation_id, tenant_id=tenant_id).first()
-    if node is None:
-        raise AutomationNotFoundError("Flow step not found.")
-    db.delete(node)
-    automation.version += 1
-    db.commit()
-
-
-def activate(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID) -> Automation:
-    automation = get_model(db, tenant_id, automation_id, for_update=True)
-    if automation.status == AutomationStatus.ARCHIVED:
-        raise AutomationFlowLockedError("Archived automations cannot be activated.")
-    issues = validate_flow(db, tenant_id, automation_id)
-    if issues:
-        raise AutomationInvalidFlowError(issues)
-    if automation.status != AutomationStatus.ACTIVE:
-        automation.version += 1
-    automation.status = AutomationStatus.ACTIVE
-    db.commit()
-    db.refresh(automation)
-    return automation
-
-
-def pause(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID) -> Automation:
-    automation = get_model(db, tenant_id, automation_id, for_update=True)
-    if automation.status != AutomationStatus.ACTIVE:
-        raise AutomationFlowLockedError("Only an active automation can be paused.")
-    automation.status = AutomationStatus.PAUSED
-    db.commit()
-    db.refresh(automation)
-    return automation
-
-
-def flow_snapshot(db: Session, automation: Automation) -> dict[str, Any]:
-    nodes, edges = _nodes_edges(db, automation.tenant_id, automation.id)
+def options() -> dict[str, Any]:
     return {
-        "nodes": [{"id": str(n.id), "node_type": n.node_type, "name": n.name, "config": n.config, "sort_order": n.sort_order} for n in nodes],
-        "edges": [{"source_node_id": str(e.source_node_id), "target_node_id": str(e.target_node_id), "branch": e.branch} for e in edges],
+        "triggers": [{"value": t, "label": _TRIGGER_LABELS[t]} for t in _TRIGGER_LABELS],
+        "condition_fields": [{"value": f, "label": _FIELD_LABELS[f]} for f in CONDITION_FIELDS],
+        "operators": [{"value": o, "label": _OPERATOR_LABELS[o]} for o in CONDITION_OPERATORS],
+        "actions": [{"value": a, "label": _ACTION_SPECS[a][0], "config_fields": _ACTION_SPECS[a][1]} for a in ACTION_TYPES],
+        "chat_statuses": [{"value": s.value, "label": s.value.capitalize()} for s in ConversationStatus],
     }
 
 
-def enqueue_for_inbound_message(
-    db: Session, *, tenant_id: uuid.UUID, channel_id: uuid.UUID,
-    conversation_id: uuid.UUID, contact_id: uuid.UUID, message_id: uuid.UUID,
-) -> int:
-    """Insert one durable execution per active matching automation/message.
+# --------------------------------------------------------------------------
+# Runs + metrics
+# --------------------------------------------------------------------------
 
-    Called from the existing database-backed WhatsApp event worker while its
-    event transaction is open. It does no network I/O and commits nowhere.
-    """
-    automations = db.query(Automation).join(
-        AutomationNode,
-        (AutomationNode.automation_id == Automation.id) & (AutomationNode.tenant_id == Automation.tenant_id),
-    ).filter(
-        Automation.tenant_id == tenant_id, Automation.status == AutomationStatus.ACTIVE,
-        Automation.trigger_type == AutomationTrigger.INBOUND_MESSAGE,
-        AutomationNode.node_type == AutomationNodeType.TRIGGER_MESSAGE,
-        AutomationNode.config["channel_connection_id"].astext == str(channel_id),
-    ).with_for_update(of=Automation).all()
-    automation_ids = [automation.id for automation in automations]
-    nodes_by_automation: dict[uuid.UUID, list[AutomationNode]] = defaultdict(list)
-    edges_by_automation: dict[uuid.UUID, list[AutomationEdge]] = defaultdict(list)
-    if automation_ids:
-        for node in db.query(AutomationNode).filter(
-            AutomationNode.tenant_id == tenant_id, AutomationNode.automation_id.in_(automation_ids),
-        ).order_by(AutomationNode.sort_order, AutomationNode.id).all():
-            nodes_by_automation[node.automation_id].append(node)
-        for edge in db.query(AutomationEdge).filter(
-            AutomationEdge.tenant_id == tenant_id, AutomationEdge.automation_id.in_(automation_ids),
-        ).all():
-            edges_by_automation[edge.automation_id].append(edge)
-    created = 0
-    for automation in automations:
-        nodes = nodes_by_automation[automation.id]
-        trigger = next((node for node in nodes if node.node_type == AutomationNodeType.TRIGGER_MESSAGE), None)
-        if trigger is None:
-            continue
-        key = f"{automation.id}:{message_id}"
-        snapshot = {
-            "nodes": [{"id": str(n.id), "node_type": n.node_type, "name": n.name, "config": n.config, "sort_order": n.sort_order} for n in nodes],
-            "edges": [{"source_node_id": str(e.source_node_id), "target_node_id": str(e.target_node_id), "branch": e.branch} for e in edges_by_automation[automation.id]],
-        }
-        inserted = db.execute(
-            insert(AutomationExecution).values(
-                tenant_id=tenant_id, automation_id=automation.id,
-                automation_version=automation.version, conversation_id=conversation_id,
-                contact_id=contact_id, trigger_message_id=message_id,
-                idempotency_key=key, status=AutomationExecutionStatus.QUEUED,
-                flow_snapshot=snapshot, max_attempts=settings.automation_max_attempts,
-            ).on_conflict_do_nothing(
-                index_elements=["tenant_id", "automation_id", "trigger_message_id"],
-            ).returning(AutomationExecution.id)
-        ).scalar_one_or_none()
-        if inserted:
-            created += 1
-    return created
-
-
-def simulate_flow(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID, message: str) -> dict[str, Any]:
-    issues = validate_flow(db, tenant_id, automation_id)
-    if issues:
-        return {"valid": False, "trigger_matched": False, "steps": [], "final_result": "Fix the validation issues before simulation."}
-    nodes, edges = _nodes_edges(db, tenant_id, automation_id)
-    node_map = {str(node.id): node for node in nodes}
-    outgoing: dict[str, list[AutomationEdge]] = defaultdict(list)
-    for edge in edges:
-        outgoing[str(edge.source_node_id)].append(edge)
-    current = next(node for node in nodes if node.node_type == AutomationNodeType.TRIGGER_MESSAGE)
-    steps: list[dict[str, Any]] = []
-    trigger_matched = False
-    final = "Simulation completed without sending a real message."
-    for _ in range(50):
-        config = current.config or {}
-        branch = None
-        if current.node_type == AutomationNodeType.TRIGGER_MESSAGE:
-            trigger_matched = True
-            detail = "Inbound WhatsApp message trigger matched."
-            result = "matched"
-        elif current.node_type == AutomationNodeType.MESSAGE_CONTAINS:
-            operator = config.get("operator", "contains")
-            needle, haystack = str(config.get("value", "")), message
-            if not config.get("case_sensitive", False):
-                needle, haystack = needle.casefold(), haystack.casefold()
-            matched = {"contains": lambda: needle in haystack, "equals": lambda: needle == haystack,
-                       "starts_with": lambda: haystack.startswith(needle), "ends_with": lambda: haystack.endswith(needle)}[operator]()
-            branch = "true" if matched else "false"
-            result, detail = ("matched", f"Message {operator.replace('_', ' ')} the configured value.") if matched else ("not_matched", f"Message does not {operator.replace('_', ' ')} the configured value.")
-        elif current.node_type == AutomationNodeType.BUSINESS_HOURS:
-            from app.services.automation_execution_service import _condition_matches
-            matched = _condition_matches(current.node_type, config, message, datetime.now(timezone.utc))
-            branch = "true" if matched else "false"
-            result, detail = ("matched", "Current time is inside business hours.") if matched else ("not_matched", "Current time is outside business hours.")
-        elif current.node_type == AutomationNodeType.DELAY:
-            result = "would_wait"
-            detail = f"Would wait {config.get('duration')} {config.get('unit')}."
-        else:
-            result = "would_execute"
-            detail = {
-                AutomationNodeType.SEND_TEXT: "Would send the configured text message.",
-                AutomationNodeType.SEND_TEMPLATE: "Would send the approved WhatsApp template.",
-                AutomationNodeType.ASSIGN_CONVERSATION: "Would assign the conversation to the selected member.",
-                AutomationNodeType.CHANGE_CONVERSATION_STATUS: "Would change the conversation status.",
-                AutomationNodeType.DELAY: f"Would wait {config.get('duration')} {config.get('unit')}.",
-            }.get(current.node_type, "Would process this step.")
-        steps.append({"node_id": current.id, "node_type": current.node_type, "result": result, "detail": detail})
-        next_edge = next((edge for edge in outgoing[str(current.id)] if edge.branch == branch), None)
-        if next_edge is None:
-            if current.node_type == AutomationNodeType.MESSAGE_CONTAINS and branch == "false":
-                final = "Condition did not match; no action would run."
-            break
-        current = node_map[str(next_edge.target_node_id)]
-    else:
-        final = "Simulation stopped at the 50-step safety limit."
-    return {"valid": True, "trigger_matched": trigger_matched, "steps": steps, "final_result": final}
-
-
-def list_executions(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID | None, page: int, page_size: int):
-    query = db.query(AutomationExecution, Automation.name).join(Automation, Automation.id == AutomationExecution.automation_id).filter(AutomationExecution.tenant_id == tenant_id)
+def list_runs(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID | None, page: int, page_size: int) -> dict[str, Any]:
+    base = select(AutomationRun).where(AutomationRun.tenant_id == tenant_id)
     if automation_id is not None:
-        get_model(db, tenant_id, automation_id)
-        query = query.filter(AutomationExecution.automation_id == automation_id)
-    total = query.count()
-    rows = query.order_by(AutomationExecution.created_at.desc(), AutomationExecution.id).offset((page - 1) * page_size).limit(page_size).all()
-    return {"items": [{"execution": row[0], "automation_name": row[1]} for row in rows], "total": total, "page": page, "page_size": page_size}
+        base = base.where(AutomationRun.automation_id == automation_id)
+    total = db.execute(select(func.count()).select_from(base.subquery())).scalar_one()
+    rows = db.execute(
+        base.order_by(AutomationRun.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    ).scalars().all()
+    return {"items": rows, "total": total, "page": page, "page_size": page_size}
 
 
-def list_execution_logs(db: Session, tenant_id: uuid.UUID, execution_id: uuid.UUID):
-    execution = db.query(AutomationExecution.id).filter_by(id=execution_id, tenant_id=tenant_id).first()
-    if execution is None:
-        raise AutomationNotFoundError("Execution not found.")
-    return db.query(AutomationExecutionLog).filter_by(tenant_id=tenant_id, execution_id=execution_id).order_by(AutomationExecutionLog.created_at, AutomationExecutionLog.id).all()
-
-
-def execution_metrics(db: Session, tenant_id: uuid.UUID, automation_id: uuid.UUID):
-    get_model(db, tenant_id, automation_id)
-    counts = dict(db.query(AutomationExecution.status, func.count(AutomationExecution.id)).filter(
-        AutomationExecution.tenant_id == tenant_id, AutomationExecution.automation_id == automation_id,
-    ).group_by(AutomationExecution.status).all())
-    latest = db.query(AutomationExecution.created_at).filter_by(tenant_id=tenant_id, automation_id=automation_id).order_by(AutomationExecution.created_at.desc()).first()
-    failure = db.query(AutomationExecution.error_summary).filter(
-        AutomationExecution.tenant_id == tenant_id, AutomationExecution.automation_id == automation_id,
-        AutomationExecution.status == AutomationExecutionStatus.FAILED,
-    ).order_by(AutomationExecution.completed_at.desc()).first()
+def metrics(db: Session, tenant_id: uuid.UUID) -> dict[str, Any]:
+    total_rules = db.execute(select(func.count()).select_from(Automation).where(Automation.tenant_id == tenant_id)).scalar_one()
+    active_rules = db.execute(select(func.count()).select_from(Automation).where(Automation.tenant_id == tenant_id, Automation.is_active.is_(True))).scalar_one()
+    by_status = dict(db.execute(
+        select(AutomationRun.status, func.count()).where(AutomationRun.tenant_id == tenant_id).group_by(AutomationRun.status)
+    ).all())
+    last_run_at = db.execute(select(func.max(AutomationRun.created_at)).where(AutomationRun.tenant_id == tenant_id)).scalar_one()
     return {
-        "total": sum(counts.values()), "completed": counts.get("completed", 0), "failed": counts.get("failed", 0),
-        "running": counts.get("running", 0), "retrying": counts.get("retrying", 0), "queued": counts.get("queued", 0),
-        "last_execution_at": latest[0] if latest else None, "last_failure": failure[0] if failure else None,
+        "total_rules": total_rules,
+        "active_rules": active_rules,
+        "runs_total": sum(by_status.values()),
+        "runs_success": by_status.get(AutomationRunStatus.SUCCESS.value, 0),
+        "runs_failed": by_status.get(AutomationRunStatus.FAILED.value, 0),
+        "runs_skipped": by_status.get(AutomationRunStatus.SKIPPED.value, 0),
+        "last_run_at": last_run_at,
     }
+
+
+# --------------------------------------------------------------------------
+# Trigger emitters — called from the hook points (contact/tag/conversation)
+# --------------------------------------------------------------------------
+
+def on_contact_created(db: Session, contact: Contact) -> None:
+    _safe_dispatch(db, contact.tenant_id, AutomationTrigger.NEW_CONTACT_CREATED, contact=contact)
+
+
+def on_tags_added(db: Session, tenant_id: uuid.UUID, contact_id: uuid.UUID, added_tag_ids: list[uuid.UUID]) -> None:
+    if not added_tag_ids:
+        return
+    contact = db.get(Contact, contact_id)
+    if contact is None or contact.tenant_id != tenant_id:
+        return
+    _safe_dispatch(db, tenant_id, AutomationTrigger.TAG_ADDED_TO_CONTACT, contact=contact)
+
+
+def on_chat_status_changed(db: Session, conversation: Conversation, old_status: str, new_status: str) -> None:
+    if old_status == new_status:
+        return
+    contact = db.get(Contact, conversation.contact_id)
+    _safe_dispatch(db, conversation.tenant_id, AutomationTrigger.CHAT_STATUS_CHANGED, contact=contact, conversation=conversation)
+
+
+def _safe_dispatch(db: Session, tenant_id, trigger: AutomationTrigger, *, contact=None, conversation=None) -> None:
+    try:
+        dispatch(db, tenant_id, trigger, contact=contact, conversation=conversation)
+    except Exception as exc:  # A rule must never break the triggering operation.
+        logger.error("automation_dispatch_failed", extra={"trigger": trigger.value, "error_type": type(exc).__name__})
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------
+# Dispatch — evaluate rules and run actions
+# --------------------------------------------------------------------------
+
+def dispatch(db: Session, tenant_id, trigger: AutomationTrigger, *, contact: Contact | None = None, conversation: Conversation | None = None) -> int:
+    rules = db.execute(
+        select(Automation).where(
+            Automation.tenant_id == tenant_id,
+            Automation.trigger_type == trigger.value,
+            Automation.is_active.is_(True),
+        ).order_by(Automation.runs_first.asc(), Automation.created_at.asc())
+    ).scalars().all()
+    fired = 0
+    for rule in rules:
+        fired += _run_rule(db, rule, contact, conversation)
+    return fired
+
+
+def _run_rule(db: Session, rule: Automation, contact: Contact | None, conversation: Conversation | None) -> int:
+    run = AutomationRun(
+        tenant_id=rule.tenant_id, automation_id=rule.id, trigger_type=rule.trigger_type,
+        contact_id=contact.id if contact else None,
+        conversation_id=conversation.id if conversation else None,
+        status=AutomationRunStatus.SKIPPED.value, matched=False, actions_run=0,
+    )
+    try:
+        if not _conditions_pass(db, rule, contact, conversation):
+            run.detail = "Conditions did not match."
+            db.add(run)
+            db.commit()
+            return 0
+        run.matched = True
+        if rule.then_mode == AutomationThenMode.START_FLOW.value:
+            run.status = AutomationRunStatus.SKIPPED.value
+            run.detail = f"Start a flow ({rule.flow_ref or 'unset'}) — flows run outside this engine."
+            db.add(run)
+            db.commit()
+            return 0
+        notes: list[str] = []
+        count = 0
+        for action in rule.actions or []:
+            ok, note = _execute_action(db, rule.tenant_id, action, contact, conversation)
+            notes.append(note)
+            if ok:
+                count += 1
+        run.actions_run = count
+        run.status = AutomationRunStatus.SUCCESS.value
+        run.detail = " | ".join(notes)[:4000] if notes else "No actions configured."
+        db.add(run)
+        db.commit()
+        return 1
+    except Exception as exc:
+        db.rollback()
+        run.status = AutomationRunStatus.FAILED.value
+        run.matched = True
+        run.detail = f"{type(exc).__name__}: {exc}"[:4000]
+        db.add(run)
+        db.commit()
+        logger.error("automation_rule_failed", extra={"automation_id": str(rule.id), "error_type": type(exc).__name__})
+        return 0
+
+
+# --------------------------------------------------------------------------
+# Condition evaluation
+# --------------------------------------------------------------------------
+
+def _conditions_pass(db: Session, rule: Automation, contact: Contact | None, conversation: Conversation | None) -> bool:
+    conditions = rule.conditions or []
+    if not conditions:
+        return True  # "leave empty to always run"
+    results = [_eval_condition(db, c, contact, conversation) for c in conditions]
+    return all(results) if rule.match_type == "all" else any(results)
+
+
+def _eval_condition(db: Session, cond: dict[str, Any], contact: Contact | None, conversation: Conversation | None) -> bool:
+    value, is_list = _field_value(db, cond.get("field", ""), contact, conversation)
+    return _apply_operator(value, is_list, cond.get("operator", "is"), str(cond.get("value", "")))
+
+
+def _field_value(db: Session, field: str, contact: Contact | None, conversation: Conversation | None):
+    """Return (value, is_list) for a condition field from the event context."""
+    if field == "existing_contact":
+        if not contact:
+            return None, False
+        label = contact.display_name or " ".join(filter(None, [contact.first_name, contact.last_name])) or contact.normalized_phone_number or contact.email
+        return (label or None), False
+    if field == "contact_tags":
+        if not contact:
+            return [], True
+        names = db.execute(
+            select(Tag.name).join(ContactTag, ContactTag.tag_id == Tag.id).where(ContactTag.contact_id == contact.id)
+        ).scalars().all()
+        return [n.lower() for n in names], True
+    if field == "source":
+        meta = (contact.contact_metadata or {}) if contact else {}
+        return (meta.get("source") or None), False
+    if field == "chat_status":
+        return (conversation.status if conversation else None), False
+    if field == "chat_mode":
+        meta = (conversation.conversation_metadata or {}) if conversation else {}
+        return (meta.get("mode") or ("bot" if conversation else None)), False
+    if field == "assigned_agent":
+        return (str(conversation.assigned_user_id) if conversation and conversation.assigned_user_id else None), False
+    if field == "has_agent_assigned":
+        return ("true" if conversation and conversation.assigned_user_id else "false"), False
+    if field == "account":
+        return (str(contact.tenant_id) if contact else (str(conversation.tenant_id) if conversation else None)), False
+    return None, False
+
+
+def _apply_operator(value, is_list: bool, operator: str, target: str) -> bool:
+    target_l = target.strip().lower()
+    if is_list:
+        items = [str(v).lower() for v in (value or [])]
+        if operator == "has_value":
+            return len(items) > 0
+        if operator == "has_no_value":
+            return len(items) == 0
+        if operator in ("has_any", "contains", "is"):
+            return target_l in items if target_l else len(items) > 0
+        if operator in ("doesnt_contain", "is_not"):
+            return target_l not in items
+        if operator == "starts_with":
+            return any(i.startswith(target_l) for i in items)
+        if operator == "ends_with":
+            return any(i.endswith(target_l) for i in items)
+        return False
+    present = value is not None and str(value).strip() != ""
+    sval = str(value).strip().lower() if present else ""
+    if operator == "has_value":
+        return present
+    if operator == "has_no_value":
+        return not present
+    if operator == "has_any":
+        return present
+    if operator == "is":
+        return sval == target_l
+    if operator == "is_not":
+        return sval != target_l
+    if operator == "contains":
+        return target_l in sval
+    if operator == "doesnt_contain":
+        return target_l not in sval
+    if operator == "starts_with":
+        return sval.startswith(target_l)
+    if operator == "ends_with":
+        return sval.endswith(target_l)
+    return False
+
+
+# --------------------------------------------------------------------------
+# Action execution — real mutations (no re-dispatch, to avoid recursion)
+# --------------------------------------------------------------------------
+
+def _execute_action(db: Session, tenant_id, action: dict[str, Any], contact: Contact | None, conversation: Conversation | None):
+    atype = action.get("type", "")
+    config = action.get("config", {}) or {}
+    if atype == "add_tags":
+        if not contact:
+            return False, "add_tags skipped (no contact)"
+        names = _split(config.get("value"))
+        tag_ids = [_resolve_or_create_tag(db, tenant_id, n) for n in names]
+        for tag_id in tag_ids:
+            db.execute(insert(ContactTag).values(id=uuid.uuid4(), tenant_id=tenant_id, contact_id=contact.id, tag_id=tag_id).on_conflict_do_nothing(index_elements=["contact_id", "tag_id"]))
+        return True, f"added tags: {', '.join(names) or '—'}"
+    if atype == "remove_tags":
+        if not contact:
+            return False, "remove_tags skipped (no contact)"
+        names = _split(config.get("value"))
+        tag_ids = [tid for tid in (_resolve_tag(db, tenant_id, n) for n in names) if tid]
+        if tag_ids:
+            db.query(ContactTag).filter(ContactTag.tenant_id == tenant_id, ContactTag.contact_id == contact.id, ContactTag.tag_id.in_(tag_ids)).delete(synchronize_session=False)
+        return True, f"removed tags: {', '.join(names) or '—'}"
+    if atype == "set_custom_field":
+        if not contact:
+            return False, "set_custom_field skipped (no contact)"
+        key = str(config.get("key", "")).strip()
+        if not key:
+            return False, "set_custom_field skipped (no key)"
+        field = _resolve_or_create_field(db, tenant_id, key)
+        existing = db.execute(select(ContactFieldValue).where(ContactFieldValue.contact_id == contact.id, ContactFieldValue.field_id == field.id)).scalar_one_or_none()
+        if existing:
+            existing.value = config.get("value")
+        else:
+            db.add(ContactFieldValue(tenant_id=tenant_id, contact_id=contact.id, field_id=field.id, value=config.get("value")))
+        return True, f"set {key} = {config.get('value')}"
+    if atype == "clear_custom_field":
+        if not contact:
+            return False, "clear_custom_field skipped (no contact)"
+        key = str(config.get("key", "")).strip()
+        field = _resolve_field(db, tenant_id, key)
+        if field:
+            db.query(ContactFieldValue).filter(ContactFieldValue.contact_id == contact.id, ContactFieldValue.field_id == field.id).delete(synchronize_session=False)
+        return True, f"cleared {key}"
+    if atype in ("subscribe_to_drip", "unsubscribe_from_drip"):
+        if not contact:
+            return False, f"{atype} skipped (no contact)"
+        drip = str(config.get("value", "")).strip()
+        meta = dict(contact.contact_metadata or {})
+        drips = list(meta.get("drips", []))
+        if atype == "subscribe_to_drip" and drip and drip not in drips:
+            drips.append(drip)
+        if atype == "unsubscribe_from_drip":
+            drips = [d for d in drips if d != drip]
+        meta["drips"] = drips
+        contact.contact_metadata = meta
+        return True, f"{atype}: {drip or '—'}"
+    if atype == "append_to_google_sheet":
+        # No Google integration is configured; record intent in the run log.
+        return True, f"queued Google Sheet append: {config.get('value', '—')}"
+    if atype == "set_chat_status":
+        if not conversation:
+            return False, "set_chat_status skipped (no conversation)"
+        status = str(config.get("value", "")).strip().lower()
+        valid = {s.value for s in ConversationStatus}
+        if status not in valid:
+            return False, f"set_chat_status skipped (invalid: {status})"
+        conversation.status = status  # Direct write — does not re-dispatch.
+        return True, f"chat status -> {status}"
+    if atype == "transfer_to_bot":
+        if not conversation:
+            return False, "transfer_to_bot skipped (no conversation)"
+        meta = dict(conversation.conversation_metadata or {})
+        meta["mode"] = "bot"
+        conversation.conversation_metadata = meta
+        conversation.assigned_user_id = None
+        return True, "transferred to bot"
+    return False, f"unknown action: {atype}"
+
+
+def _split(raw: Any) -> list[str]:
+    if not raw:
+        return []
+    return [p.strip() for p in str(raw).split(",") if p.strip()]
+
+
+def _resolve_tag(db: Session, tenant_id, name_or_id: str) -> uuid.UUID | None:
+    try:
+        tid = uuid.UUID(name_or_id)
+        found = db.execute(select(Tag.id).where(Tag.tenant_id == tenant_id, Tag.id == tid)).scalar_one_or_none()
+        if found:
+            return found
+    except (ValueError, AttributeError):
+        pass
+    return db.execute(select(Tag.id).where(Tag.tenant_id == tenant_id, func.lower(Tag.name) == name_or_id.lower())).scalar_one_or_none()
+
+
+def _resolve_or_create_tag(db: Session, tenant_id, name_or_id: str) -> uuid.UUID:
+    existing = _resolve_tag(db, tenant_id, name_or_id)
+    if existing:
+        return existing
+    tag = Tag(tenant_id=tenant_id, name=name_or_id[:60], color=DEFAULT_TAG_COLOR)
+    db.add(tag)
+    db.flush()
+    return tag.id
+
+
+def _resolve_field(db: Session, tenant_id, key: str) -> CustomFieldDefinition | None:
+    if not key:
+        return None
+    return db.execute(select(CustomFieldDefinition).where(CustomFieldDefinition.tenant_id == tenant_id, CustomFieldDefinition.key == key)).scalar_one_or_none()
+
+
+def _resolve_or_create_field(db: Session, tenant_id, key: str) -> CustomFieldDefinition:
+    existing = _resolve_field(db, tenant_id, key)
+    if existing:
+        return existing
+    field = CustomFieldDefinition(tenant_id=tenant_id, label=key[:60], key=key[:60], field_type="text")
+    db.add(field)
+    db.flush()
+    return field

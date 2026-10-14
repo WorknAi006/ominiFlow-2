@@ -88,6 +88,8 @@ def get_token_payload(
 TokenPayload = Annotated[dict[str, Any], Depends(get_token_payload)]
 
 
+from app.models.user_session import UserSession
+
 def get_current_user(
     payload: TokenPayload,
     db: DbSession,
@@ -102,6 +104,12 @@ def get_current_user(
 
     if user is None or not user.is_active:
         raise _credentials_exception()
+        
+    session_id = _parse_uuid(payload.get("session_id"))
+    if session_id:
+        user_session = db.get(UserSession, session_id)
+        if not user_session or not user_session.is_active:
+            raise _credentials_exception()
 
     return user
 

@@ -1,7 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { createTemplate } from "@/lib/templates/browser";
+import { listChannels, type ChannelConnection } from "@/lib/channels/browser";
+
+const CATEGORY_MAP: Record<string, string> = { Marketing: "MARKETING", Utility: "UTILITY", Authentication: "AUTHENTICATION" };
+const LANGUAGE_MAP: Record<string, string> = { English: "en_US", Spanish: "es", Hindi: "hi" };
 
 const ChevronLeftIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><polyline points="15 18 9 12 15 6" /></svg>);
 const SparklesIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M9 3v1m0 4v1m0-1a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2zm7 5v1m0 4v1m0-1a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2zM4 15v1m0 4v1m0-1a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2zm16-4v1m0 4v1m0-1a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2z" /></svg>);
@@ -19,6 +25,7 @@ const ShieldCheckIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="h
 
 
 export function TemplateEditor() {
+  const router = useRouter();
   const [templateType, setTemplateType] = useState("Standard");
   const [category, setCategory] = useState("Marketing");
   const [language, setLanguage] = useState("English");
@@ -27,6 +34,41 @@ export function TemplateEditor() {
   const [bodyText, setBodyText] = useState("");
   const [footerText, setFooterText] = useState("");
   const [buttons, setButtons] = useState<string[]>([]);
+
+  const [channels, setChannels] = useState<ChannelConnection[]>([]);
+  const [channelId, setChannelId] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    listChannels({ page: 1, page_size: 100, channel_type: "whatsapp" })
+      .then((r) => setChannels(r.items))
+      .catch(() => setChannels([]));
+  }, []);
+
+  async function save() {
+    setError("");
+    if (!channelId) return setError("Select a WhatsApp channel.");
+    if (!/^[a-z0-9_]{1,512}$/.test(name)) return setError("Name must be lowercase letters, numbers and underscores only.");
+    if (!bodyText.trim()) return setError("Body is required.");
+    setSaving(true);
+    try {
+      await createTemplate({
+        channel_connection_id: channelId,
+        name,
+        language: LANGUAGE_MAP[language] ?? "en_US",
+        category: CATEGORY_MAP[category] ?? null,
+        header_text: headerType === "Text" ? bodyText.slice(0, 60) : null,
+        body_text: bodyText,
+        footer_text: footerText.trim() || null,
+        buttons: buttons.filter(Boolean),
+      });
+      router.push("/templates");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save the template.");
+      setSaving(false);
+    }
+  }
 
   return (
     <div className="bg-[#f8f9fa] min-h-screen text-slate-800 font-sans">
@@ -39,8 +81,8 @@ export function TemplateEditor() {
             </Link>
             <h1 className="text-xl font-bold text-slate-800">Create Template</h1>
           </div>
-          <button className="px-5 py-2.5 bg-[#00b050] hover:bg-[#009040] text-white rounded-lg font-bold text-sm shadow-sm flex items-center gap-2">
-            <SaveIcon className="w-4 h-4" /> Save Template
+          <button onClick={() => void save()} disabled={saving} className="px-5 py-2.5 bg-[#00b050] hover:bg-[#009040] disabled:opacity-60 text-white rounded-lg font-bold text-sm shadow-sm flex items-center gap-2">
+            <SaveIcon className="w-4 h-4" /> {saving ? "Saving…" : "Save Template"}
           </button>
         </div>
       </div>
@@ -103,6 +145,21 @@ export function TemplateEditor() {
               </button>
             </div>
             
+            {error && <div className="mb-4 rounded-lg bg-rose-50 px-4 py-2.5 text-sm text-rose-800">{error}</div>}
+
+            <div className="mb-6">
+              <label className="block text-sm font-bold text-slate-700 mb-2">WhatsApp Channel <span className="text-rose-500">*</span></label>
+              <select
+                value={channelId}
+                onChange={(e) => setChannelId(e.target.value)}
+                className="w-full px-4 py-2.5 bg-white border border-slate-200 rounded-lg text-sm text-slate-800 outline-none focus:border-[#00b050] focus:ring-1 focus:ring-[#00b050]"
+              >
+                <option value="">{channels.length ? "Select a channel" : "No WhatsApp channels — connect one first"}</option>
+                {channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <p className="mt-1 text-xs text-slate-400">Saved as a local draft. WhatsApp templates must be approved by Meta (sync) before they can be sent.</p>
+            </div>
+
             <div className="grid grid-cols-2 gap-6 mb-6">
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-2">Category <span className="text-rose-500">*</span></label>
