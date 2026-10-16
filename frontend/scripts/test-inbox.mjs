@@ -13,7 +13,7 @@ const { outputText } = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 });
 writeFileSync(join(outDir, "proxy-utils.mjs"), outputText);
-const { buildInboxProxyTarget, canSendWhatsAppReply } = await import(
+const { buildInboxProxyTarget, canSendWhatsAppReply, definitiveMessageSendFailure } = await import(
   pathToFileURL(join(outDir, "proxy-utils.mjs")).href
 );
 after(() => rmSync(outDir, { recursive: true, force: true }));
@@ -82,5 +82,19 @@ describe("send readiness", () => {
     assert.match(canSendWhatsAppReply(webChat, { can_send: false }, { is_blocked: false }), /not connected/);
     assert.match(canSendWhatsAppReply(webChat, { can_send: true }, { is_blocked: true }), /blocked/);
     assert.equal(canSendWhatsAppReply(webChat, { can_send: true }, { is_blocked: false }), null);
+  });
+
+  it("identifies definitive WhatsApp rejections without marking transient send failures as certain", () => {
+    const messageRoute = ["conversations", conversationId, "messages"];
+    assert.equal(
+      definitiveMessageSendFailure("POST", messageRoute, 502, "WhatsApp rejected the message: Authentication Error"),
+      "WhatsApp authentication failed. Reconnect the channel in Channels with a valid access token.",
+    );
+    assert.equal(
+      definitiveMessageSendFailure("POST", messageRoute, 502, "WhatsApp rejected the message: Outside the 24h window"),
+      "WhatsApp rejected the message: Outside the 24h window",
+    );
+    assert.equal(definitiveMessageSendFailure("POST", messageRoute, 502, "Could not reach WhatsApp."), null);
+    assert.equal(definitiveMessageSendFailure("POST", messageRoute, 503, "WhatsApp rejected the message: Authentication Error"), null);
   });
 });

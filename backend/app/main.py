@@ -29,6 +29,8 @@ from app.api.knowledge_bases import router as knowledge_bases_router
 from app.api.analytics import router as analytics_router
 from app.api.ecommerce import router as ecommerce_router
 from app.api.flows import router as flows_router
+from app.api.routing_config import router as routing_config_router
+from app.api.payments import router as payments_router
 from app.core.config import settings
 
 
@@ -208,6 +210,16 @@ app.include_router(
 
 app.include_router(
     flows_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    routing_config_router,
+    prefix="/api/v1",
+)
+
+app.include_router(
+    payments_router,
     prefix="/api/v1",
 )
 

@@ -8,8 +8,13 @@ Runs against the real PostgreSQL database inside a rolled-back transaction
 role, channels) from tests/inbox_fixtures.py.
 """
 import uuid
+from types import SimpleNamespace
+from unittest.mock import Mock
+
+from sqlalchemy.exc import IntegrityError
 
 from app.models import ConversationStatus
+from app.services.contact_service import _commit
 from tests.inbox_fixtures import InboxTestCase
 
 CONTACTS_URL = "/api/v1/contacts"
@@ -179,6 +184,21 @@ class CreateTests(ContactsTestCase):
         # Tenant B already owns 15559999999; tenant A may hold the same number.
         response = self.create(self.owner, {"phone_number": "15559999999"})
         self.assertEqual(response.status_code, 201, response.text)
+
+    def test_unrelated_integrity_error_is_not_reported_as_duplicate_phone(self):
+        db = Mock()
+        db.commit.side_effect = IntegrityError(
+            "INSERT INTO contacts ...",
+            {},
+            SimpleNamespace(
+                diag=SimpleNamespace(constraint_name="some_other_constraint")
+            ),
+        )
+
+        with self.assertRaises(IntegrityError):
+            _commit(db)
+
+        db.rollback.assert_called_once_with()
 
 
 class UpdateTests(ContactsTestCase):

@@ -3,7 +3,11 @@ import type { Message } from "@/lib/api/messages";
 import type { PaginatedResponse } from "@/lib/api/client";
 
 export class InboxApiError extends Error {
-  constructor(public readonly status: number, message: string) {
+  constructor(
+    public readonly status: number,
+    message: string,
+    public readonly outcome: "rejected" | null = null,
+  ) {
     super(message);
     this.name = "InboxApiError";
   }
@@ -66,7 +70,10 @@ async function inboxRequest<T>(path: string, options: { method?: "GET" | "POST";
     const message = payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string"
       ? payload.error
       : "The inbox request could not be completed.";
-    throw new InboxApiError(response.status, message);
+    const outcome = payload && typeof payload === "object" && "outcome" in payload && payload.outcome === "rejected"
+      ? "rejected"
+      : null;
+    throw new InboxApiError(response.status, message, outcome);
   }
   return payload as T;
 }

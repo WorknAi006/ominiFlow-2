@@ -541,3 +541,54 @@ class ListAllTemplatesTests(TemplateTestCase):
         self.assertNotIn(TOKEN_A, response.text)
         self.assertNotIn(TOKEN_B, response.text)
         self.assertNotIn("access_token", response.text)
+
+
+class AiTemplateGenerateTests(TemplateTestCase):
+    def test_ai_generate_returns_drafts_and_charges_credits(self):
+        from unittest.mock import patch
+        fake = {
+            "drafts": [{
+                "name": "diwali_sale", "category": "MARKETING", "language": "en_US",
+                "header_type": "text", "header_text": "Big Diwali Sale",
+                "body_text": "Hi {{1}}, get {{2}} off!", "footer_text": "Reply STOP to opt out",
+                "buttons": ["Shop now"],
+            }],
+            "tokens_in": 300, "tokens_out": 150, "model": "gpt-4o-mini",
+        }
+        with patch("app.services.ai_template_service.generate_templates", return_value=fake):
+            res = self.client.post(
+                "/api/v1/templates/ai-generate",
+                headers=self.auth(self.owner, self.tenant_a),
+                json={"prompt": "diwali sale announcement", "count": 5},
+            )
+        self.assertEqual(res.status_code, 200, res.text)
+        data = res.json()
+        self.assertEqual(len(data["items"]), 1)
+        self.assertEqual(data["items"][0]["name"], "diwali_sale")
+        self.assertEqual(data["credits_used"], 0.45)   # 450 tokens -> 0.45 credits
+        self.assertEqual(data["balance"], round(500.0 - 0.45, 2))
+
+    def test_ai_generate_not_configured(self):
+        from unittest.mock import patch
+        with patch("app.services.ai_template_service.generate_templates", return_value=None):
+            res = self.client.post(
+                "/api/v1/templates/ai-generate",
+                headers=self.auth(self.owner, self.tenant_a),
+                json={"prompt": "something"},
+            )
+        self.assertEqual(res.status_code, 503, res.text)
+
+    def test_ai_generate_provider_error_surfaces_message(self):
+        from unittest.mock import patch
+        from app.services.ai_template_service import AiProviderError
+        with patch(
+            "app.services.ai_template_service.generate_templates",
+            side_effect=AiProviderError("You have no credits remaining."),
+        ):
+            res = self.client.post(
+                "/api/v1/templates/ai-generate",
+                headers=self.auth(self.owner, self.tenant_a),
+                json={"prompt": "diwali offer"},
+            )
+        self.assertEqual(res.status_code, 502, res.text)
+        self.assertIn("no credits remaining", res.json()["detail"])

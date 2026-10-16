@@ -11,6 +11,7 @@ import {
   connectWhatsApp,
   createChannel,
   disconnectChannel,
+  deleteChannel,
   getMetaOAuthAssets,
   listChannels,
   startMetaOAuth,
@@ -155,6 +156,8 @@ export function ChannelsClient() {
 
   const [confirmTarget, setConfirmTarget] = useState<ChannelConnection | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<ChannelConnection | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const [creatingWebChat, setCreatingWebChat] = useState(false);
 
@@ -559,6 +562,42 @@ export function ChannelsClient() {
     }
   }
 
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    setNotice(null);
+    try {
+      await deleteChannel(deleteTarget.id);
+      setChecks((prev) => {
+        const next = { ...prev };
+        delete next[deleteTarget.id];
+        return next;
+      });
+      setFbChecks((prev) => {
+        const next = { ...prev };
+        delete next[deleteTarget.id];
+        return next;
+      });
+      setIgChecks((prev) => {
+        const next = { ...prev };
+        delete next[deleteTarget.id];
+        return next;
+      });
+      setSyncResults((prev) => {
+        const next = { ...prev };
+        delete next[deleteTarget.id];
+        return next;
+      });
+      setDeleteTarget(null);
+      setNotice({ kind: "success", text: "Channel deleted. Its conversations and message history are kept." });
+      await refresh();
+    } catch (error) {
+      handleError(error, "Could not delete this channel.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   const connectedCount = useMemo(
     () => channels.filter((c) => c.status === "connected").length,
     [channels],
@@ -786,6 +825,9 @@ export function ChannelsClient() {
                   ) : (
                     <span className="channel-soon">Setup for {PROVIDER_LABEL[channel.channel_type]} is coming soon.</span>
                   )}
+                  <button type="button" className="channel-action channel-action-danger" disabled={isBusy || deleting} onClick={() => setDeleteTarget(channel)}>
+                    Delete
+                  </button>
                 </div>
               </li>
             );
@@ -1051,6 +1093,25 @@ export function ChannelsClient() {
               </button>
               <button type="button" className="channel-primary-btn channel-btn-danger" onClick={() => void confirmDisconnect()} disabled={confirming}>
                 {confirming ? "Disconnecting…" : "Disconnect"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="channel-modal-scrim" role="dialog" aria-modal="true" aria-labelledby="delete-channel-title">
+          <div className="channel-modal channel-modal-sm">
+            <h2 id="delete-channel-title">Delete {deleteTarget.name}?</h2>
+            <p className="channel-modal-sub">
+              This channel will be removed from the workspace and its stored credentials will be erased. It will stop sending and receiving messages. Existing conversations, contacts and message history will be kept. This action cannot be undone.
+            </p>
+            <div className="channel-modal-actions">
+              <button type="button" className="channel-secondary-btn" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+                Cancel
+              </button>
+              <button type="button" className="channel-primary-btn channel-btn-danger" onClick={() => void confirmDelete()} disabled={deleting}>
+                {deleting ? "Deleting…" : "Delete channel"}
               </button>
             </div>
           </div>

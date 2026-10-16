@@ -8,6 +8,7 @@ import {
   bulkApplyTags,
   bulkDeleteContacts,
   createContact,
+  createContactConversation,
   deleteAllContacts,
   deleteContact,
   exportContactsCsv,
@@ -273,6 +274,17 @@ export function ContactsClient() {
       setNotice({ kind: "success", text: updated.is_blocked ? "Contact blocked." : "Contact unblocked." });
       await load(page, search, channelFilter, tagFilter);
     } catch (error) { handleError(error, "Could not update this contact."); }
+    finally { setBlocking(false); }
+  }
+
+  async function sendMessageToContact(contact: Contact) {
+    setBlocking(true);
+    setNotice(null);
+    try {
+      const preferredChannel = contact.identities.find((i) => i.channel_type === "whatsapp" || i.channel_type === "web_chat")?.channel_type ?? "whatsapp";
+      const conversation = await createContactConversation(contact.id, preferredChannel);
+      window.location.assign(`/inbox?conversation=${encodeURIComponent(conversation.id)}`);
+    } catch (error) { handleError(error, "Could not open the inbox conversation."); }
     finally { setBlocking(false); }
   }
 
@@ -576,6 +588,7 @@ export function ContactsClient() {
                     </span>
                     <span role="cell" data-label="Actions" className="contacts-actions-col">
                       <button type="button" className="channel-action" onClick={() => void openDetails(contact)}>View</button>
+                      <button type="button" className="channel-action" onClick={() => void sendMessageToContact(contact)}>Message</button>
                       <button type="button" className="channel-action" onClick={() => { setFormError(""); setEditing({ contact, form: toForm(contact) }); }}>Edit</button>
                       <button type="button" className="channel-action channel-action-danger" onClick={() => setDeleteTargets([contact.id])}>Delete</button>
                     </span>
@@ -682,7 +695,7 @@ export function ContactsClient() {
                   <label className="channel-field" key={field}>
                     <span>{labels[field]}</span>
                     <input type={field === "email" ? "email" : field === "phone_number" ? "tel" : "text"} value={form[field]}
-                      onChange={(e) => { const value = e.target.value; if (createForm) setCreateForm({ ...createForm, [field]: value }); else if (editing) setEditing({ ...editing, form: { ...editing.form, [field]: value } }); }}
+                      onChange={(e) => { const value = e.target.value; setFormError(""); if (createForm) setCreateForm({ ...createForm, [field]: value }); else if (editing) setEditing({ ...editing, form: { ...editing.form, [field]: value } }); }}
                       placeholder={field === "phone_number" ? "+15555550123" : field === "email" ? "name@example.com" : ""} autoComplete="off" />
                   </label>
                 );
@@ -842,6 +855,7 @@ export function ContactsClient() {
               <button type="button" className={details.is_blocked ? "channel-secondary-btn" : "channel-secondary-btn channel-btn-danger-outline"} onClick={() => void toggleBlock(details)} disabled={blocking}>
                 {blocking ? "Working…" : details.is_blocked ? "Unblock" : "Block"}
               </button>
+              <button type="button" className="channel-primary-btn" onClick={() => { void sendMessageToContact(details); }} disabled={blocking}>Message</button>
               <button type="button" className="channel-primary-btn" onClick={() => { setFormError(""); setEditing({ contact: details, form: toForm(details) }); setDetails(null); }}>Edit contact</button>
             </div>
           </div>

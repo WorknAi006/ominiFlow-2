@@ -18,6 +18,7 @@ class KeywordTriggerStatus(StrEnum):
 class KeywordTriggerAction(StrEnum):
     RUN_FLOW = "run_flow"
     SEND_TEXT = "send_text"
+    AI_REPLY = "ai_reply"
     NONE = "none"
 
 
@@ -35,7 +36,8 @@ class KeywordTrigger(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "keyword_triggers"
 
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
-    keyword_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("keywords.id", ondelete="CASCADE"), nullable=False)
+    # Nullable: a global-routing fallback trigger has no originating keyword.
+    keyword_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("keywords.id", ondelete="CASCADE"), nullable=True)
     flow_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("flows.id", ondelete="SET NULL"), nullable=True)
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True)
     contact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="SET NULL"), nullable=True)

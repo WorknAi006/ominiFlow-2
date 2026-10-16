@@ -92,3 +92,24 @@ export function createTemplate(input: LocalTemplateInput) {
 export function syncTemplates(channelId: string) {
   return request<TemplateSyncResult>(`/sync/${encodeURIComponent(channelId)}`, { method: "POST" });
 }
+
+export interface AiTemplateDraft {
+  name: string;
+  category: string;
+  language: string;
+  header_type: string;
+  header_text: string | null;
+  body_text: string;
+  footer_text: string | null;
+  buttons: string[];
+}
+
+export interface AiTemplateGenerateResult {
+  items: AiTemplateDraft[];
+  credits_used: number;
+  balance: number;
+}
+
+export function generateTemplatesAi(input: { prompt: string; count?: number; category?: string | null; language?: string | null }) {
+  return request<AiTemplateGenerateResult>("/ai-generate", { method: "POST", body: input });
+}

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +39,21 @@ class Settings(BaseSettings):
     # Comma-separated Fernet keys used to encrypt channel credentials.
     # The first key encrypts; all keys decrypt (allows key rotation).
     channel_credential_keys: str = ""
+
+    # Razorpay (Payments)
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+
+    # OpenAI (platform AI replies). Empty disables AI replies (safe no-op);
+    # a tenant's own key in tenant_ai_configs takes precedence when set.
+    openai_api_key: str = ""
+    openai_chat_model: str = "gpt-4o-mini"
+    openai_embedding_model: str = "text-embedding-3-small"
+    # Credits charged per 1,000 tokens (prompt + completion). The purchase
+    # pricing (INR/credit) is unchanged and lives in the frontend.
+    ai_credits_per_1k_tokens: float = 1.0
+    ai_reply_max_tokens: int = 500
+    ai_reply_temperature: float = 0.3
 
     # Meta (WhatsApp Cloud API / Graph API)
     meta_app_id: str = ""
@@ -88,6 +104,25 @@ class Settings(BaseSettings):
     def allowed_frontend_origins(self) -> list[str]:
         configured = self.frontend_origins or self.frontend_url
         return [origin.strip().rstrip("/") for origin in configured.split(",") if origin.strip()]
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.strip().lower() in ("production", "prod")
+
+    @model_validator(mode="after")
+    def _validate_production_secrets(self) -> "Settings":
+        """Fail fast when the app boots in production with weak/default secrets."""
+        if not self.is_production:
+            return self
+        weak = {"", "CHANGE_ME", "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"}
+        problems: list[str] = []
+        if self.jwt_secret in weak or len(self.jwt_secret) < 32:
+            problems.append("JWT_SECRET must be a strong random value of at least 32 characters")
+        if not self.channel_credential_keys.strip():
+            problems.append("CHANNEL_CREDENTIAL_KEYS must be set to encrypt channel credentials")
+        if problems:
+            raise ValueError("Insecure production configuration: " + "; ".join(problems) + ".")
+        return self
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILES,

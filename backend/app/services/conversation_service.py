@@ -322,7 +322,9 @@ def create_conversation(
     channel_id: uuid.UUID,
     subject: str | None = None,
 ) -> ConversationResponse:
-    conversation = get_or_create_conversation(db, tenant_id, contact_id, channel_id)
+    conversation = get_or_create_conversation(
+        db, tenant_id, contact_id, channel_id, force_channel=True,
+    )
     if subject is not None:
         conversation.subject = subject
     _commit(db)
@@ -437,12 +439,59 @@ def get_or_create_conversation(
     tenant_id: uuid.UUID,
     contact_id: uuid.UUID,
     channel_id: uuid.UUID,
+    *,
+    inbound_at: datetime | None = None,
+    force_channel: bool = False,
 ) -> Conversation:
     """
-    Return the active (open/pending) conversation for contact + channel,
-    creating an open one if none exists. Race-safe via the partial unique
-    index: concurrent callers converge on the same row.
+    WhatsApp contacts keep one conversation across the tenant's connected
+    WhatsApp lines. Other channels keep one active conversation per channel.
     """
+
+    channel = db.get(ChannelConnection, channel_id)
+    channel_type = channel.channel_type if channel is not None else None
+
+    if channel_type == "whatsapp":
+        db.execute(
+            insert(Conversation)
+            .values(
+                id=uuid.uuid4(),
+                tenant_id=tenant_id,
+                contact_id=contact_id,
+                channel_connection_id=channel_id,
+                channel_type=channel_type,
+                last_inbound_at=inbound_at,
+                status=ConversationStatus.OPEN,
+                unread_count=0,
+            )
+            .on_conflict_do_nothing(
+                index_elements=["tenant_id", "contact_id"],
+                index_where=text("channel_type = 'whatsapp'"),
+            )
+        )
+
+        conversation = (
+            db.query(Conversation)
+            .filter(
+                Conversation.tenant_id == tenant_id,
+                Conversation.contact_id == contact_id,
+                Conversation.channel_type == "whatsapp",
+            )
+            .with_for_update()
+            .populate_existing()
+            .one()
+        )
+
+        if force_channel or inbound_at is not None and (
+            conversation.last_inbound_at is None or inbound_at >= conversation.last_inbound_at
+        ):
+            conversation.channel_connection_id = channel_id
+        if inbound_at is not None and (
+            conversation.last_inbound_at is None or inbound_at >= conversation.last_inbound_at
+        ):
+            conversation.last_inbound_at = inbound_at
+        conversation.status = ConversationStatus.OPEN
+        return conversation
 
     db.execute(
         insert(Conversation)
@@ -451,6 +500,7 @@ def get_or_create_conversation(
             tenant_id=tenant_id,
             contact_id=contact_id,
             channel_connection_id=channel_id,
+            channel_type=channel_type,
             status=ConversationStatus.OPEN,
             unread_count=0,
         )
@@ -483,6 +533,8 @@ def record_activity(
     Atomically bump last_message_at (never backwards) and, for inbound
     messages, unread_count.
     """
+
+    db.flush()
 
     values: dict[str, Any] = {
         "last_message_at": func.greatest(

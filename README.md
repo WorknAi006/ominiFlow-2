@@ -277,10 +277,11 @@ Inbox API -> POST /conversations/{id}/messages -> WhatsApp provider -> Meta
   same customer can exist in several tenants. `profile_name` comes from
   WhatsApp; `display_name` and the name fields are set by the team.
 - **conversations:** status is `open`, `pending`, `resolved` or `closed`.
-  A partial unique index allows at most one active (`open`/`pending`)
-  conversation per contact + channel. A message after `resolved`/`closed`
-  starts a new conversation, and reopening an old one while another is
-  active returns 409.
+  Each tenant has one persistent WhatsApp conversation per contact across
+  its connected WhatsApp lines. New inbound messages reopen that thread and
+  replies use the line that received the latest inbound message. Other
+  channel types retain separate conversations and tenant data is never
+  merged.
 - **messages:** a unique `(tenant_id, channel_connection_id,
   external_message_id)` makes provider messages idempotent. `created_at`
   uses `clock_timestamp()`, so ordering is correct even within one

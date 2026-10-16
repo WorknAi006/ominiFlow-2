@@ -44,6 +44,7 @@ from app.models.custom_field import (
 )
 from app.models.keyword import Keyword
 from app.models.tenant_ai_config import TenantAiConfig
+from app.models.tenant_routing_config import TenantRoutingConfig
 from app.models.ecommerce import Product, Order, OrderItem, OrderStatus
 from app.models.campaign import Campaign, CampaignStatus
 from app.models.campaign_recipient import CampaignRecipient, CampaignRecipientStatus
@@ -52,6 +53,8 @@ from app.models.user_session import UserSession
 from app.models.flow import Flow, FlowStatus
 from app.models.flow_session import FlowSession, FlowSessionStatus, FlowSessionWait
 from app.models.keyword_trigger import KeywordTrigger, KeywordTriggerAction, KeywordTriggerStatus
+from app.models.payment import PaymentTransaction, TenantAiCredit
+from app.models.credit_usage import CreditUsage
 
 
 __all__ = [
@@ -89,6 +92,7 @@ __all__ = [
     "CustomFieldDefinition", "ContactFieldValue", "CustomFieldType",
     "Keyword",
     "TenantAiConfig",
+    "TenantRoutingConfig",
     "Product",
     "Order",
     "OrderItem",
@@ -108,4 +112,7 @@ __all__ = [
     "KeywordTrigger",
     "KeywordTriggerAction",
     "KeywordTriggerStatus",
+    "PaymentTransaction",
+    "TenantAiCredit",
+    "CreditUsage",
 ]

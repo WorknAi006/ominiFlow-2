@@ -127,6 +127,26 @@ class ContactApiTests(InboxTestCase):
         response = self.client.patch(f"{CONTACTS}/{self.carol.id}", headers=self.headers(), json={"email": None})
         self.assertEqual(response.status_code, 422)
 
+    def test_create_contact_conversation_and_send_text_message(self):
+        headers = self.headers(self.agent)
+        create = self.client.post(
+            f"{CONTACTS}/{self.alice.id}/conversations",
+            headers=headers,
+            json={"channel_type": "whatsapp"},
+        )
+        self.assertEqual(create.status_code, 201, create.text)
+        conversation_id = create.json()["id"]
+
+        send_headers = {**headers, "Idempotency-Key": str(uuid.uuid4())}
+        response = self.client.post(
+            f"{CONVERSATIONS}/{conversation_id}/messages",
+            headers=send_headers,
+            json={"type": "text", "text": "Hi Alice from the contact page"},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["text"], "Hi Alice from the contact page")
+        self.assertEqual(response.json()["conversation_id"], conversation_id)
+
     def test_rbac(self):
         body = {"phone_number": "+14155550150"}
         self.assertEqual(self.client.post(CONTACTS, headers=self.headers(self.viewer), json=body).json(), FORBIDDEN)
@@ -302,12 +322,27 @@ class ConversationApiTests(InboxTestCase):
         self.assertEqual(self.client.post(url, headers=self.headers(), json={"status": "archived"}).status_code, 422)
         self.assertEqual(self.client.post(url, headers=self.headers(self.viewer), json={"status": "open"}).status_code, 403)
 
-    def test_reopen_conflicts_with_active_thread(self):
-        # Bob's resolved conversation; a new active one exists for Bob.
-        self.make_conversation(self.tenant_a, self.bob, self.wa_a)
+    def test_reopening_whatsapp_thread_and_non_whatsapp_conflict(self):
+        # WhatsApp keeps one persistent thread per contact across its lines.
+        response = self.client.post(
+            f"{CONVERSATIONS}/{self.conv_bob.id}/status",
+            headers=self.headers(),
+            json={"status": "open"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["id"], str(self.conv_bob.id))
+
+        # Other channels retain their existing per-channel active-thread rule.
+        resolved = self.make_conversation(
+            self.tenant_a, self.bob, self.ig_a, status=ConversationStatus.RESOLVED,
+        )
+        self.make_conversation(self.tenant_a, self.bob, self.ig_a)
         self.db.commit()
-        response = self.client.post(f"{CONVERSATIONS}/{self.conv_bob.id}/status",
-                                    headers=self.headers(), json={"status": "open"})
+        response = self.client.post(
+            f"{CONVERSATIONS}/{resolved.id}/status",
+            headers=self.headers(),
+            json={"status": "open"},
+        )
         self.assertEqual(response.status_code, 409)
 
     def test_tenant_isolation(self):

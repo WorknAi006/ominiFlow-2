@@ -163,6 +163,7 @@ class InboxTestCase(DatabaseTestCase):
             tenant_id=tenant.id,
             contact_id=contact.id,
             channel_connection_id=channel.id,
+            channel_type=channel.channel_type,
             status=status,
             unread_count=fields.pop("unread_count", 0),
             **fields,

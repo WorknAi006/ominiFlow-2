@@ -16,6 +16,7 @@ Instagram/Facebook/Web Chat) payload knowledge stays in that provider's
 normalizer. The caller runs this inside its durable event transaction and
 publishes the returned realtime events only after it commits.
 """
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -60,8 +61,10 @@ def process_inbound_event(
         display_name=event.sender_display_name,
     )
 
+    occurred_at = event.occurred_at or datetime.now(timezone.utc)
     conversation = conversation_service.get_or_create_conversation(
         db, event.tenant_id, contact.id, event.channel_connection_id,
+        inbound_at=occurred_at if event.channel_type == "whatsapp" else None,
     )
 
     reply_to_id = None
@@ -80,7 +83,7 @@ def process_inbound_event(
         message_type=event.message_type,
         sender_identifier=event.external_sender_id,
         recipient_identifier=channel.external_account_id if channel else None,
-        sent_at=event.occurred_at,
+        sent_at=occurred_at,
         text=event.text,
         media_type=event.media_type,
         media_metadata=event.media_metadata,
@@ -91,7 +94,7 @@ def process_inbound_event(
     if created is None:
         return []
 
-    conversation_service.record_activity(db, conversation, event.occurred_at, inbound=True)
+    conversation_service.record_activity(db, conversation, occurred_at, inbound=True)
 
     # Keyword → flow triggering. Recorded in this same durable transaction so
     # it is atomic with the message and idempotent on webhook replays. Covers

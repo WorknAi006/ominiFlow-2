@@ -1,10 +1,10 @@
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import CurrentTenant, DbSession
+from app.api.dependencies import CurrentTenant, DbSession, require_permission
 from app.schemas.campaign import (
     CampaignCreate,
     CampaignUpdate,
@@ -17,7 +17,7 @@ from app.services.campaign import CampaignService
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
-@router.post("/preview-audience", response_model=AudiencePreviewResponse)
+@router.post("/preview-audience", response_model=AudiencePreviewResponse, dependencies=[Depends(require_permission("message:read"))])
 def preview_audience(
     data: AudiencePreviewRequest,
     tenant: CurrentTenant,
@@ -28,7 +28,7 @@ def preview_audience(
     return {"total_contacts": count}
 
 
-@router.post("", response_model=CampaignRead)
+@router.post("", response_model=CampaignRead, dependencies=[Depends(require_permission("message:create"))])
 def create_campaign(
     data: CampaignCreate,
     tenant: CurrentTenant,
@@ -41,7 +41,7 @@ def create_campaign(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("", response_model=CampaignListResponse)
+@router.get("", response_model=CampaignListResponse, dependencies=[Depends(require_permission("message:read"))])
 def get_campaigns(
     tenant: CurrentTenant,
     db: DbSession,
@@ -54,7 +54,7 @@ def get_campaigns(
     return {"items": campaigns, "total": total}
 
 
-@router.get("/{campaign_id}", response_model=CampaignRead)
+@router.get("/{campaign_id}", response_model=CampaignRead, dependencies=[Depends(require_permission("message:read"))])
 def get_campaign(
     campaign_id: uuid.UUID,
     tenant: CurrentTenant,
@@ -66,7 +66,7 @@ def get_campaign(
         raise HTTPException(status_code=404, detail="Campaign not found")
     return campaign
 
-@router.post("/{campaign_id}/start", response_model=CampaignRead)
+@router.post("/{campaign_id}/start", response_model=CampaignRead, dependencies=[Depends(require_permission("message:create"))])
 def start_campaign(
     campaign_id: uuid.UUID,
     tenant: CurrentTenant,
@@ -79,7 +79,7 @@ def start_campaign(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.patch("/{campaign_id}", response_model=CampaignRead)
+@router.patch("/{campaign_id}", response_model=CampaignRead, dependencies=[Depends(require_permission("message:create"))])
 def update_campaign(
     campaign_id: uuid.UUID,
     data: CampaignUpdate,

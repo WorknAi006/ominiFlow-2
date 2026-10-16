@@ -163,6 +163,68 @@ class FlowEngineTests(InboxTestCase):
         self.assertIn("Thanks", self.sent_texts())
         self.assertEqual(self.session().status, "completed")
 
+    # ---- global fallback routing ----
+    def test_global_fallback_flow(self):
+        nodes = [{"id": "start", "type": "message", "position": {"x": 0, "y": 0}, "data": {
+            "isStart": True, "messageType": "text", "message": "Fallback hello",
+        }}]
+        fid = self.make_flow_graph(nodes, [], "Fallback")
+        r = self.client.put(
+            "/api/v1/routing-config", headers=self.head(),
+            json={"fallback_action": "flow", "fallback_flow_id": fid},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+
+        # A message that matches no keyword routes into the fallback flow.
+        self.ingest("literally anything xyz", "wamid.GF1")
+        self.pump()
+        self.assertIn("Fallback hello", self.sent_texts())
+
+    def test_global_fallback_ai_reply(self):
+        from unittest.mock import patch
+        from app.models import CreditUsage, TenantAiCredit
+        from app.services import payment_service
+
+        # Give the tenant a known balance.
+        payment_service.get_or_create_balance(self.db, self.tenant_a.id)
+        self.db.commit()
+
+        r = self.client.put(
+            "/api/v1/routing-config", headers=self.head(),
+            json={"fallback_action": "ai"},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+
+        fake = {"text": "Thanks for reaching out! How can I help?", "tokens_in": 800, "tokens_out": 200, "model": "gpt-4o-mini"}
+        with patch("app.services.ai_reply_service.generate_reply", return_value=fake):
+            self.ingest("hi there, random question", "wamid.AI1")
+            self.pump()
+
+        self.assertIn("Thanks for reaching out! How can I help?", self.sent_texts())
+        usage = self.db.query(CreditUsage).filter_by(tenant_id=self.tenant_a.id).all()
+        self.assertEqual(len(usage), 1)
+        self.assertEqual(float(usage[0].credits), 1.0)  # 1000 tokens -> 1.0 credit
+        balance = self.db.query(TenantAiCredit).filter_by(tenant_id=self.tenant_a.id).one().balance
+        self.assertEqual(float(balance), 499.0)  # 500 default - 1.0
+
+    def test_no_fallback_when_unconfigured(self):
+        self.ingest("some random text", "wamid.GF2")
+        self.pump()
+        self.assertEqual(self.sent_texts(), [])
+
+    # ---- text header + footer compose into the body ----
+    def test_text_header_footer_compose(self):
+        nodes = [{"id": "start", "type": "message", "position": {"x": 0, "y": 0}, "data": {
+            "isStart": True, "messageType": "text", "message": "Body here",
+            "header": {"type": "text", "text": "Hi there"}, "footer": "Reply STOP to opt out",
+        }}]
+        self.make_keyword("hdr", self.make_flow_graph(nodes, [], "HdrFlow"))
+        self.ingest("hdr", "wamid.H1")
+        self.pump()
+        msg = next((t for t in self.sent_texts() if "Body here" in t), "")
+        self.assertIn("*Hi there*", msg)
+        self.assertIn("Reply STOP to opt out", msg)
+
     # ---- media node sends a real media message ----
     def test_media_node_sends_media(self):
         up = self.client.post(

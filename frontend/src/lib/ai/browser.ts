@@ -51,7 +51,7 @@ export type ValidateResponse = {
 };
 
 export async function validateAiConfig(): Promise<ValidateResponse> {
-  const response = await fetch("/api/ai-config/validate", {
+  const response = await fetch("/api/ai-config", {
     method: "POST",
     headers: { Accept: "application/json" },
     cache: "no-store",

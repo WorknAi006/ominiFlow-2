@@ -114,3 +114,32 @@ class TemplateComponentInput(BaseModel):
         if is_button != (self.sub_type is not None) or is_button != (self.index is not None):
             raise ValueError("sub_type and index are required for buttons only.")
         return self
+
+
+# ---------- AI template generation ----------
+
+class AiTemplateGenerateRequest(BaseModel):
+    prompt: str = Field(min_length=3, max_length=1000)
+    count: int = Field(default=10, ge=1, le=10)
+    category: str | None = Field(default=None, max_length=30)
+    language: str | None = Field(default=None, max_length=20)
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class AiTemplateDraft(BaseModel):
+    name: str
+    category: str
+    language: str
+    # none | text | image | video | document
+    header_type: str = "none"
+    header_text: str | None = None
+    body_text: str
+    footer_text: str | None = None
+    buttons: list[str] = Field(default_factory=list)
+
+
+class AiTemplateGenerateResponse(BaseModel):
+    items: list[AiTemplateDraft]
+    credits_used: float
+    balance: float

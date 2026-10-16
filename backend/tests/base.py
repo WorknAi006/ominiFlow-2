@@ -52,6 +52,13 @@ class DatabaseTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        # Tests must be deterministic regardless of the developer's .env:
+        # never make real OpenAI calls (use the mock embedding provider / no-op
+        # AI replies). Saved and restored in tearDownClass.
+        from app.core.config import settings as _settings
+        cls._saved_openai_key = _settings.openai_api_key
+        _settings.openai_api_key = ""
+
         cls.connection = engine.connect()
         cls.outer_transaction = cls.connection.begin()
 
@@ -79,6 +86,8 @@ class DatabaseTestCase(unittest.TestCase):
         set_broker(None)
         cls.outer_transaction.rollback()
         cls.connection.close()
+        from app.core.config import settings as _settings
+        _settings.openai_api_key = cls._saved_openai_key
 
     def setUp(self) -> None:
         self.savepoint = self.connection.begin_nested()

@@ -9,6 +9,9 @@ from app.models.campaign import Campaign, CampaignStatus
 from app.models.campaign_recipient import CampaignRecipient, CampaignRecipientStatus
 from app.models.channel_connection import ChannelConnection
 from app.models.contact import Contact
+from app.models.message_template import MessageTemplate
+from app.models.tenant_membership import TenantMembership
+from app.models.user import User
 from app.services.outbound_message_service import (
     send_message,
     MessageSendFailedError,
@@ -93,17 +96,25 @@ def _process_single_recipient(db: Session, r: CampaignRecipient) -> None:
         db.commit()
         return
 
-    # Check for fake admin user to act as sender (or None if system allows it)
-    # Actually outbound_message_service requires an actor (User). We need a system user or we can bypass it if needed.
-    # The existing test base uses an actor. We'll find a way to get one or use a dummy.
-    # Let's inspect outbound_message_service.
-    from app.models.user import User
-    # We might need to just use a system actor or the first admin of the tenant.
-    actor = db.scalar(select(User).where(User.is_active.is_(True)).limit(1))
-    
+    # Send as an active member of the campaign's own tenant (tenant-scoped,
+    # never a user from another tenant).
+    actor = db.scalar(
+        select(User)
+        .join(TenantMembership, TenantMembership.user_id == User.id)
+        .where(
+            TenantMembership.tenant_id == r.tenant_id,
+            TenantMembership.status == "active",
+            User.is_active.is_(True),
+        )
+        .order_by(User.created_at.asc())
+        .limit(1)
+    )
+
     contact = db.scalar(select(Contact).where(Contact.id == r.contact_id))
     
     try:
+        if not actor:
+            raise RecipientUnavailableError("No active user in this tenant to send as")
         if not contact or contact.is_blocked:
             raise RecipientUnavailableError("Contact not found or blocked")
 
@@ -113,15 +124,26 @@ def _process_single_recipient(db: Session, r: CampaignRecipient) -> None:
 
         # Find or create a conversation for this channel and contact
         conversation = conversation_service.get_or_create_conversation(
-            db, r.tenant_id, r.contact_id, channel.id
+            db, r.tenant_id, r.contact_id, channel.id, force_channel=True,
         )
 
         idempotency_key = uuid.uuid5(uuid.NAMESPACE_OID, f"campaign_{campaign.id}_recipient_{r.id}_attempt_{r.attempt_count}")
         
         if campaign.message_template_id:
-            # Not fully supported in Phase 1 creation UI, but supported if populated
-            # Assuming we had template resolving logic here
-            raise ValueError("Template sending deferred in Phase 1 UI")
+            template = db.scalar(
+                select(MessageTemplate).where(
+                    MessageTemplate.id == campaign.message_template_id,
+                    MessageTemplate.tenant_id == r.tenant_id,
+                )
+            )
+            if not template:
+                raise ValueError("Template not found for campaign")
+            data = TemplateMessageCreate(
+                type="template",
+                template_name=template.name,
+                language=template.language,
+                components=campaign.template_params or [],
+            )
         else:
             data = TextMessageCreate(type="text", text=campaign.text_content or "")
 

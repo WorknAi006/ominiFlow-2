@@ -3,9 +3,11 @@ import io
 import uuid
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from pydantic import BaseModel, ConfigDict
 
 from app.api.dependencies import CurrentTenant, DbSession, require_permission
 from app.api.errors import service_errors
+from app.models import ChannelConnection, ChannelStatus, ChannelType
 from app.schemas.contact import (
     ContactCreate,
     ContactImportRequest,
@@ -14,6 +16,7 @@ from app.schemas.contact import (
     ContactResponse,
     ContactUpdate,
 )
+from app.schemas.conversation import ConversationResponse
 from app.schemas.custom_field import ContactFieldsUpdate
 from app.schemas.tag import (
     BulkDeleteRequest,
@@ -21,21 +24,30 @@ from app.schemas.tag import (
     ContactTagsUpdate,
     DeleteAllRequest,
 )
-from app.services import contact_service, custom_field_service, tag_service
+from app.services import contact_service, conversation_service, custom_field_service, tag_service
 from app.services.contact_service import (
     ContactAlreadyExistsError,
     ContactNotFoundError,
     InvalidContactError,
 )
+from app.services.outbound_message_service import ChannelNotConnectedError
 from app.services.custom_field_service import CustomFieldNotFoundError, InvalidCustomFieldError
 from app.services.tag_service import InvalidTagError, TagNotFoundError
 
 router = APIRouter(prefix="/contacts", tags=["Contacts"])
 
+
+class ContactConversationCreate(BaseModel):
+    channel_type: ChannelType | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
 ERRORS = {
     ContactNotFoundError: status.HTTP_404_NOT_FOUND,
     ContactAlreadyExistsError: status.HTTP_409_CONFLICT,
     InvalidContactError: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    ChannelNotConnectedError: status.HTTP_409_CONFLICT,
     TagNotFoundError: status.HTTP_404_NOT_FOUND,
     InvalidTagError: status.HTTP_422_UNPROCESSABLE_CONTENT,
     CustomFieldNotFoundError: status.HTTP_404_NOT_FOUND,
@@ -160,6 +172,60 @@ def bulk_tags(data: BulkTagRequest, tenant: CurrentTenant, db: DbSession):
             db, tenant.id, data.contact_ids, data.add_tag_ids, data.remove_tag_ids,
         )
     return {"affected": affected}
+
+
+@router.post(
+    "/{contact_id}/conversations",
+    response_model=ConversationResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("message:create"))],
+)
+def create_contact_conversation(
+    contact_id: uuid.UUID,
+    data: ContactConversationCreate | None = None,
+    tenant: CurrentTenant = None,
+    db: DbSession = None,
+):
+    contact = contact_service.get_contact_model(db, tenant.id, contact_id)
+
+    preferred_type = (data.channel_type if data and data.channel_type else None)
+    if preferred_type is None:
+        identities = (
+            db.query(ChannelConnection)
+            .filter(
+                ChannelConnection.tenant_id == tenant.id,
+                ChannelConnection.channel_type == ChannelType.WHATSAPP,
+                ChannelConnection.status == ChannelStatus.CONNECTED,
+                ChannelConnection.is_active.is_(True),
+                ChannelConnection.is_deleted.is_(False),
+            )
+            .order_by(ChannelConnection.created_at.asc())
+            .first()
+        )
+        if identities is None:
+            raise ChannelNotConnectedError("No connected channel is configured for this contact.")
+        channel = identities
+    else:
+        channel = (
+            db.query(ChannelConnection)
+            .filter(
+                ChannelConnection.tenant_id == tenant.id,
+                ChannelConnection.channel_type == preferred_type,
+                ChannelConnection.status == ChannelStatus.CONNECTED,
+                ChannelConnection.is_active.is_(True),
+                ChannelConnection.is_deleted.is_(False),
+            )
+            .order_by(ChannelConnection.created_at.asc())
+            .first()
+        )
+        if channel is None:
+            raise ChannelNotConnectedError(f"No connected {preferred_type} channel is available.")
+
+    conversation = conversation_service.get_or_create_conversation(
+        db, tenant.id, contact.id, channel.id,
+    )
+    db.commit()
+    return conversation_service.get_conversation(db, tenant.id, conversation.id)
 
 
 @router.get(

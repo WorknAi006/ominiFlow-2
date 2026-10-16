@@ -256,6 +256,17 @@ export function buildContactProxyTarget(
     return { backendPath: `/contacts/${id}/tags`, method: "POST", query: empty, body: { tag_ids: tagIds } };
   }
 
+  if (segments.length === 2 && segments[1] === "conversations" && method === "POST") {
+    const channelType = isRecord(body) && body.channel_type !== undefined ? body.channel_type : undefined;
+    if (channelType !== undefined && (typeof channelType !== "string" || !/^[a-z_]+$/.test(channelType))) return null;
+    return {
+      backendPath: `/contacts/${id}/conversations`,
+      method: "POST",
+      query: empty,
+      body: channelType ? { channel_type: channelType } : {},
+    };
+  }
+
   if (segments.length === 2 && segments[1] === "fields" && method === "POST") {
     if (!isRecord(body) || !isRecord(body.values)) return null;
     const values: Record<string, unknown> = {};

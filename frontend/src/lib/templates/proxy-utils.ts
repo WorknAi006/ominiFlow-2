@@ -92,5 +92,10 @@ export function buildTemplateProxyTarget(
     return { backendPath: `/channels/${segments[1]}/templates/sync`, method: "POST", query: empty };
   }
 
+  // POST /templates/ai-generate — AI template generation.
+  if (segments.length === 1 && segments[0] === "ai-generate" && method === "POST" && params.size === 0) {
+    return { backendPath: "/templates/ai-generate", method: "POST", query: empty };
+  }
+
   return null;
 }

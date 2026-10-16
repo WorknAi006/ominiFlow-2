@@ -171,3 +171,24 @@ export function canSendWhatsAppReply(
   if (contact.is_blocked) return "This contact is blocked and cannot receive messages.";
   return null;
 }
+
+export function definitiveMessageSendFailure(
+  method: string,
+  segments: string[],
+  status: number,
+  detail: string | null,
+) {
+  if (
+    method !== "POST" ||
+    status !== 502 ||
+    segments.length !== 3 ||
+    segments[0] !== "conversations" ||
+    segments[2] !== "messages" ||
+    !detail?.startsWith("WhatsApp rejected the message:")
+  ) return null;
+
+  if (/authentication error|invalid oauth access token|expired access token/i.test(detail)) {
+    return "WhatsApp authentication failed. Reconnect the channel in Channels with a valid access token.";
+  }
+  return detail;
+}

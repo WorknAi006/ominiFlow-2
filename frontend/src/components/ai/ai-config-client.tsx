@@ -14,9 +14,11 @@ const EyeOffIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="http:/
 const InfoIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></svg>);
 
 import { useAiConfigHook } from "./use-ai-config";
+import { useCreditBalance } from "@/lib/credits/use-credit-balance";
 import { KnowledgeBaseTab } from "./knowledge-base-tab";
 
 export function AiConfigClient() {
+  const creditBalance = useCreditBalance();
   const [activeTab, setActiveTab] = useState("API Providers");
   
   const {
@@ -122,7 +124,7 @@ export function AiConfigClient() {
                 </p>
                 <div className="bg-slate-50 border border-slate-100 rounded-xl p-5 mb-8 w-full max-w-md flex justify-between items-center">
                   <span className="text-slate-600 font-semibold">Current Balance</span>
-                  <span className="text-lg font-black text-slate-900">461.12 credits</span>
+                  <span className="text-lg font-black text-slate-900">{creditBalance === null ? "…" : creditBalance.toFixed(2)} credits</span>
                 </div>
                 <Link href="/ai-credits" className="px-6 py-3 bg-white border border-slate-200 rounded-xl font-bold text-slate-700 hover:bg-slate-50 shadow-sm flex items-center gap-2">
                   Purchase Credits <ArrowRightIcon className="w-4 h-4" />

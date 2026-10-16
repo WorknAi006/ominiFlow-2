@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { backendApiUrl, isRecord, parseJson } from "@/lib/auth/backend";
 import { getSessionAccessToken } from "@/lib/auth/session";
 import { SESSION_COOKIE_NAME } from "@/lib/auth/session-utils";
-import { buildInboxProxyTarget } from "@/lib/inbox/proxy-utils";
+import { buildInboxProxyTarget, definitiveMessageSendFailure } from "@/lib/inbox/proxy-utils";
 
 export const runtime = "nodejs";
 
@@ -73,7 +73,13 @@ async function handle(request: NextRequest, context: RouteContext, method: "GET"
 
   if (!upstream.ok) {
     const failure = upstreamFailure(upstream.status);
-    const response = NextResponse.json({ error: failure.error }, { status: failure.status });
+    const payload = await parseJson(upstream);
+    const detail = isRecord(payload) && typeof payload.detail === "string" ? payload.detail : null;
+    const definitiveFailure = definitiveMessageSendFailure(method, segments, upstream.status, detail);
+    const response = NextResponse.json({
+      error: definitiveFailure ?? failure.error,
+      ...(definitiveFailure ? { outcome: "rejected" } : {}),
+    }, { status: failure.status });
     return upstream.status === 401 ? clearSession(response) : response;
   }
 

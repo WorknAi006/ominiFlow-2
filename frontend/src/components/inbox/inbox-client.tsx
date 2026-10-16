@@ -116,6 +116,7 @@ export function InboxClient({ initialConversationId }: InboxClientProps) {
   const selectedConversationRef = useRef(selectedConversation);
   const listRequestId = useRef(0);
   const messageRequestId = useRef(0);
+  const selectionRequestId = useRef(0);
   const messagePageRef = useRef(1);
   const loadConversationsRef = useRef<(showLoading?: boolean) => Promise<void>>(async () => {});
   const refreshThreadRef = useRef<(conversationId: string) => Promise<void>>(async () => {});
@@ -237,12 +238,14 @@ export function InboxClient({ initialConversationId }: InboxClientProps) {
 
   useEffect(() => {
     if (!selectedId) {
+      selectionRequestId.current += 1;
       messageRequestId.current += 1;
       return;
     }
 
     let active = true;
-    const selectionRequestId = ++messageRequestId.current;
+    const currentSelectionRequestId = ++selectionRequestId.current;
+    const historyRequestId = ++messageRequestId.current;
     const selectedBefore = selectedConversationRef.current;
     const conversationPromise = selectedBefore?.id === selectedId
       ? Promise.resolve(selectedBefore)
@@ -265,16 +268,18 @@ export function InboxClient({ initialConversationId }: InboxClientProps) {
         getInboxChannelAvailability(conversation.channel.id),
         getInboxContactDetails(conversation.contact.id),
       ]);
-      if (!active || selectionRequestId !== messageRequestId.current) return;
+      if (!active || currentSelectionRequestId !== selectionRequestId.current) return;
 
       const historyResult = history as PromiseSettledResult<Awaited<ReturnType<typeof listInboxMessages>>>;
-      if (historyResult.status === "fulfilled") {
-        const chronological = [...historyResult.value.items].reverse();
-        scrollMode.current = "bottom";
-        setMessages(chronological);
-        setMessageTotal(historyResult.value.total);
-      } else {
-        setMessagesError(historyResult.reason instanceof Error ? historyResult.reason.message : "Could not load message history.");
+      if (historyRequestId === messageRequestId.current) {
+        if (historyResult.status === "fulfilled") {
+          const chronological = [...historyResult.value.items].reverse();
+          scrollMode.current = "bottom";
+          setMessages(chronological);
+          setMessageTotal(historyResult.value.total);
+        } else {
+          setMessagesError(historyResult.reason instanceof Error ? historyResult.reason.message : "Could not load message history.");
+        }
       }
 
       const channelResult = channel as PromiseSettledResult<{ can_send: boolean }>;
@@ -296,9 +301,9 @@ export function InboxClient({ initialConversationId }: InboxClientProps) {
           if (active) setMessagesError(error instanceof Error ? "Messages loaded, but read status could not be updated." : "Read status could not be updated.");
         });
       }
-      setMessagesLoading(false);
+      if (historyRequestId === messageRequestId.current) setMessagesLoading(false);
     }).catch((error: unknown) => {
-      if (!active) return;
+      if (!active || currentSelectionRequestId !== selectionRequestId.current) return;
       const message = error instanceof Error ? error.message : "Conversation could not be opened.";
       setMessagesError(message);
       setSelectedConversation(null);
@@ -402,7 +407,8 @@ export function InboxClient({ initialConversationId }: InboxClientProps) {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Message could not be sent.";
       setSendError(message);
-      if (!(error instanceof InboxApiError) || error.status === 0 || error.status >= 500) {
+      const definitelyRejected = error instanceof InboxApiError && error.outcome === "rejected";
+      if (!definitelyRejected && (!(error instanceof InboxApiError) || error.status === 0 || error.status >= 500)) {
         setUncertainSend(true);
       }
     } finally {
@@ -679,6 +685,7 @@ export function InboxClient({ initialConversationId }: InboxClientProps) {
                 {canReplyReason && <p className="composer-notice" role="status">{canReplyReason}</p>}
                 {sendError && <div className={`send-error ${uncertainSend ? "send-error-uncertain" : ""}`} role="alert">
                   <p>{sendError}</p>
+                  {/WhatsApp authentication failed/i.test(sendError) && <a className="text-action mt-2 inline-block" href="/channels">Open Channels to reconnect WhatsApp</a>}
                   {uncertainSend && <>
                     <p className="mt-1 text-xs leading-5">The message may already have reached WhatsApp. Refresh and check the thread before deciding whether to retry.</p>
                     <button type="button" className="text-action mt-2" onClick={() => void refreshThread(selectedConversation.id)}>Refresh message status</button>

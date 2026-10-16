@@ -59,6 +59,13 @@ class Conversation(Base, UUIDMixin, TimestampMixin):
         index=True,
     )
 
+    channel_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    last_inbound_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     status: Mapped[str] = mapped_column(
         String(20),
         default=ConversationStatus.OPEN,
@@ -114,6 +121,13 @@ class Conversation(Base, UUIDMixin, TimestampMixin):
             "channel_connection_id",
             unique=True,
             postgresql_where=text("status IN ('open', 'pending')"),
+        ),
+        Index(
+            "uq_conversations_whatsapp_contact",
+            "tenant_id",
+            "contact_id",
+            unique=True,
+            postgresql_where=text("channel_type = 'whatsapp'"),
         ),
         Index(
             "ix_conversations_tenant_last_message_at",

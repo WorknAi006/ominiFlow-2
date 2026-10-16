@@ -8,6 +8,7 @@ from app.models.campaign import Campaign, CampaignStatus
 from app.models.contact import Contact
 from app.models.tag import ContactTag
 from app.models.channel_connection import ChannelConnection
+from app.models.message_template import MessageTemplate
 from app.schemas.campaign import CampaignCreate, CampaignUpdate
 from app.models.campaign_recipient import CampaignRecipient, CampaignRecipientStatus
 

@@ -4,6 +4,8 @@ normalizer produces a NormalizedInboundEvent, and inbound_event_service
 turns it into Contact -> Conversation -> Message using ContactIdentity,
 with no WhatsApp-specific parsing in the common path.
 """
+from datetime import timedelta
+
 from app.integrations.base import NormalizedInboundEvent
 from app.integrations.registry import get_provider
 from app.models import (
@@ -15,7 +17,14 @@ from app.models import (
     MessageType,
 )
 from app.services import inbound_event_service
-from tests.inbox_fixtures import BASE_TIME, CUSTOMER, CUSTOMER_E164, InboxTestCase
+from tests.inbox_fixtures import (
+    BASE_TIME,
+    CUSTOMER,
+    CUSTOMER_E164,
+    TOKEN_A,
+    WABA_A,
+    InboxTestCase,
+)
 
 
 def raw_text(message_id="wamid.N1", sender=CUSTOMER, body="Hello there", name="Jane Customer"):
@@ -144,6 +153,40 @@ class CommonProcessingTests(InboxTestCase):
         ).all()
         self.assertEqual(len(identities), 1)
         self.assertEqual(identities[0].contact_id, contacts[0].id)
+
+    def test_same_number_across_whatsapp_lines_uses_one_thread(self):
+        other_line = self.make_channel(
+            self.tenant_a, "WA A2", "phone-id-a2", WABA_A, TOKEN_A,
+        )
+        self.process(raw_text(message_id="wamid.LINE_A"), channel=self.wa_a)
+
+        latest_time = BASE_TIME + timedelta(minutes=10)
+        latest = raw_text(message_id="wamid.LINE_B")
+        latest["occurred_at"] = latest_time
+        self.process(latest, channel=other_line)
+
+        # A delayed webhook from the older line must not change the reply route.
+        older = raw_text(message_id="wamid.LINE_A_OLD")
+        older["occurred_at"] = BASE_TIME + timedelta(minutes=5)
+        self.process(older, channel=self.wa_a)
+
+        self.db.expire_all()
+        conversations = self.db.query(Conversation).filter_by(
+            tenant_id=self.tenant_a.id,
+        ).all()
+        self.assertEqual(len(conversations), 1)
+        self.assertEqual(conversations[0].channel_connection_id, other_line.id)
+        self.assertEqual(conversations[0].last_inbound_at, latest_time)
+
+        messages = self.db.query(Message).filter_by(
+            tenant_id=self.tenant_a.id,
+        ).all()
+        self.assertEqual(len(messages), 3)
+        self.assertEqual({message.conversation_id for message in messages}, {conversations[0].id})
+        self.assertEqual(
+            {message.channel_connection_id for message in messages},
+            {self.wa_a.id, other_line.id},
+        )
 
     # Test 4: a tenant A event never resolves a tenant B identity
     def test_tenant_isolation_of_identity_resolution(self):

@@ -171,9 +171,16 @@ def _normalize(phone: str) -> str:
 def _commit(db: Session) -> None:
     try:
         db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
-        raise ContactAlreadyExistsError(DUPLICATE_PHONE) from None
+        constraint_name = getattr(
+            getattr(exc.orig, "diag", None),
+            "constraint_name",
+            None,
+        )
+        if constraint_name == "uq_contacts_tenant_normalized_phone":
+            raise ContactAlreadyExistsError(DUPLICATE_PHONE) from None
+        raise
     except SQLAlchemyError:
         db.rollback()
         raise

@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 SCOPES: dict[str, str] = {
     ChannelType.FACEBOOK.value: "pages_show_list,pages_messaging,pages_manage_metadata",
     ChannelType.INSTAGRAM.value: (
-        "pages_show_list,pages_manage_metadata,instagram_basic,instagram_manage_messages"
+        "instagram_business_basic,instagram_business_manage_messages"
     ),
 }
 

@@ -234,6 +234,24 @@ def _build_buttons(data: dict[str, Any]) -> list[InteractiveButton]:
     return out
 
 
+def _wrap_header_footer(text: str, data: dict[str, Any], contact: Contact | None, variables: dict[str, Any]) -> str:
+    """Compose a text header (as a bold first line) and footer around a body,
+    for non-interactive messages (text / media caption / list / prompt).
+    WhatsApp only renders native header/footer on interactive messages."""
+    parts: list[str] = []
+    header = data.get("header")
+    if isinstance(header, dict) and str(header.get("type")) == "text":
+        htext = _interpolate(str(header.get("text") or "").strip(), contact, variables)
+        if htext:
+            parts.append(f"*{htext}*")
+    if text:
+        parts.append(text)
+    footer = _interpolate(str(data.get("footer") or "").strip(), contact, variables)
+    if footer:
+        parts.append(footer)
+    return "\n\n".join(parts)
+
+
 def _has_reply_button(data: dict[str, Any]) -> bool:
     return any(
         isinstance(b, dict)
@@ -274,7 +292,7 @@ def _send_media(db: Session, session: FlowSession, node: dict[str, Any], contact
     actor = _actor(db, session)
     if actor is None:
         raise OutboundMessageError("No user to send as.")
-    caption = _interpolate(str(data.get("message") or "").strip(), contact, variables) or None
+    caption = _wrap_header_footer(_interpolate(str(data.get("message") or "").strip(), contact, variables), data, contact, variables) or None
     name = data.get("mediaName")
     key = uuid.uuid5(_NS, f"flow:{session.id}:{node.get('id')}:media")
     outbound_message_service.send_message(
@@ -345,7 +363,8 @@ def _execute(db: Session, session: FlowSession, node: dict[str, Any], contact: C
     variables = dict(session.variables or {})
     try:
         if mt == "text":
-            text = _interpolate(str(data.get("message") or "").strip(), contact, variables)
+            body = _interpolate(str(data.get("message") or "").strip(), contact, variables)
+            text = _wrap_header_footer(body, data, contact, variables)
             if text:
                 _send_text(db, session, str(node["id"]), text)
             return ("continue", None)
@@ -371,12 +390,13 @@ def _execute(db: Session, session: FlowSession, node: dict[str, Any], contact: C
             return ("wait_reply", None) if _has_reply_button(data) else ("continue", None)
 
         if mt == "list":
-            _send_text(db, session, str(node["id"]), _menu_text(node, contact, variables), seq="menu")
+            menu = _wrap_header_footer(_menu_text(node, contact, variables), data, contact, variables)
+            _send_text(db, session, str(node["id"]), menu, seq="menu")
             return ("wait_reply", None)
 
         if mt == "get_user_data":
             prompt = _interpolate(str(data.get("message") or "Please reply.").strip(), contact, variables)
-            _send_text(db, session, str(node["id"]), prompt)
+            _send_text(db, session, str(node["id"]), _wrap_header_footer(prompt, data, contact, variables))
             return ("wait_reply", None)
 
         if mt == "condition":

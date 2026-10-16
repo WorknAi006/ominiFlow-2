@@ -3,11 +3,15 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createTemplate } from "@/lib/templates/browser";
+import { createTemplate, type AiTemplateDraft } from "@/lib/templates/browser";
 import { listChannels, type ChannelConnection } from "@/lib/channels/browser";
+import { AiTemplateModal, AI_TEMPLATE_DRAFT_KEY } from "@/components/templates/ai-template-modal";
 
 const CATEGORY_MAP: Record<string, string> = { Marketing: "MARKETING", Utility: "UTILITY", Authentication: "AUTHENTICATION" };
 const LANGUAGE_MAP: Record<string, string> = { English: "en_US", Spanish: "es", Hindi: "hi" };
+const CATEGORY_LABEL: Record<string, string> = { MARKETING: "Marketing", UTILITY: "Utility", AUTHENTICATION: "Authentication" };
+const LANGUAGE_LABEL: Record<string, string> = { en_US: "English", es: "Spanish", hi: "Hindi" };
+const HEADER_LABEL: Record<string, string> = { none: "None", text: "Text", image: "Image", video: "Video", document: "Document" };
 
 const ChevronLeftIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><polyline points="15 18 9 12 15 6" /></svg>);
 const SparklesIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><path d="M9 3v1m0 4v1m0-1a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2zm7 5v1m0 4v1m0-1a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2zM4 15v1m0 4v1m0-1a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2zm16-4v1m0 4v1m0-1a2 2 0 0 0 2-2 2 2 0 0 0-2-2 2 2 0 0 0-2 2 2 2 0 0 0 2 2z" /></svg>);
@@ -31,6 +35,7 @@ export function TemplateEditor() {
   const [language, setLanguage] = useState("English");
   const [name, setName] = useState("");
   const [headerType, setHeaderType] = useState("None");
+  const [headerText, setHeaderText] = useState("");
   const [bodyText, setBodyText] = useState("");
   const [footerText, setFooterText] = useState("");
   const [buttons, setButtons] = useState<string[]>([]);
@@ -39,11 +44,36 @@ export function TemplateEditor() {
   const [channelId, setChannelId] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [aiOpen, setAiOpen] = useState(false);
+
+  function applyDraft(d: AiTemplateDraft) {
+    setName(d.name);
+    setCategory(CATEGORY_LABEL[d.category] ?? "Marketing");
+    setLanguage(LANGUAGE_LABEL[d.language] ?? "English");
+    setHeaderType(HEADER_LABEL[d.header_type] ?? "None");
+    setHeaderText(d.header_text ?? "");
+    setBodyText(d.body_text);
+    setFooterText(d.footer_text ?? "");
+    setButtons(d.buttons ?? []);
+  }
 
   useEffect(() => {
     listChannels({ page: 1, page_size: 100, channel_type: "whatsapp" })
       .then((r) => setChannels(r.items))
       .catch(() => setChannels([]));
+  }, []);
+
+  // Pre-fill from an AI-generated draft chosen on the Templates page.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(AI_TEMPLATE_DRAFT_KEY);
+      if (raw) {
+        applyDraft(JSON.parse(raw) as AiTemplateDraft);
+        sessionStorage.removeItem(AI_TEMPLATE_DRAFT_KEY);
+      }
+    } catch {
+      // ignore malformed/unavailable storage
+    }
   }, []);
 
   async function save() {
@@ -58,7 +88,7 @@ export function TemplateEditor() {
         name,
         language: LANGUAGE_MAP[language] ?? "en_US",
         category: CATEGORY_MAP[category] ?? null,
-        header_text: headerType === "Text" ? bodyText.slice(0, 60) : null,
+        header_text: headerType === "Text" ? (headerText.trim().slice(0, 60) || null) : null,
         body_text: bodyText,
         footer_text: footerText.trim() || null,
         buttons: buttons.filter(Boolean),
@@ -140,7 +170,7 @@ export function TemplateEditor() {
           <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-lg font-bold text-slate-900">Basic Info</h2>
-              <button className="flex items-center gap-2 px-4 py-2 bg-purple-50 text-purple-700 rounded-lg font-bold text-sm border border-purple-100 hover:bg-purple-100">
+              <button type="button" onClick={() => setAiOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-purple-50 text-purple-700 rounded-lg font-bold text-sm border border-purple-100 hover:bg-purple-100">
                 <SparklesIcon className="w-4 h-4" /> Generate with AI
               </button>
             </div>
@@ -211,18 +241,30 @@ export function TemplateEditor() {
             <div className="flex gap-6">
               {["None", "Text", "Image", "Video", "Document"].map(opt => (
                 <label key={opt} className="flex items-center gap-2 cursor-pointer">
-                  <input 
-                    type="radio" 
-                    name="headerType" 
-                    value={opt} 
-                    checked={headerType === opt} 
-                    onChange={() => setHeaderType(opt)} 
+                  <input
+                    type="radio"
+                    name="headerType"
+                    value={opt}
+                    checked={headerType === opt}
+                    onChange={() => setHeaderType(opt)}
                     className="w-4 h-4 text-[#00b050] focus:ring-[#00b050]"
                   />
                   <span className="text-sm font-semibold text-slate-700">{opt}</span>
                 </label>
               ))}
             </div>
+            {headerType === "Text" && (
+              <input
+                value={headerText}
+                onChange={(e) => setHeaderText(e.target.value)}
+                maxLength={60}
+                placeholder="Header text (max 60)"
+                className="mt-4 w-full px-4 py-2.5 border border-slate-200 rounded-lg text-sm text-slate-800 outline-none focus:border-[#00b050] focus:ring-1 focus:ring-[#00b050]"
+              />
+            )}
+            {(headerType === "Image" || headerType === "Video" || headerType === "Document") && (
+              <p className="mt-3 text-xs text-slate-400">A sample {headerType.toLowerCase()} is attached when you submit this template to Meta for approval.</p>
+            )}
           </div>
 
           {/* Body Section */}
@@ -282,13 +324,29 @@ export function TemplateEditor() {
           <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm mb-10">
             <h2 className="text-lg font-bold text-slate-900 mb-1">Buttons <span className="text-slate-400 font-normal text-sm">(Optional)</span></h2>
             <p className="text-sm text-slate-600 mb-6">Create up to 11 buttons that let customers respond to your message or take action.</p>
-            
-            <div className="flex gap-3">
-              <button className="flex items-center justify-between px-4 py-2.5 bg-white border border-slate-200 rounded-lg text-sm font-bold text-slate-700 w-48 hover:bg-slate-50">
-                <span>+ Add button</span>
-                <span className="text-slate-400 text-xs">▼</span>
-              </button>
+
+            <div className="space-y-2 mb-3">
+              {buttons.map((b, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <input
+                    value={b}
+                    onChange={(e) => setButtons(buttons.map((x, idx) => (idx === i ? e.target.value : x)))}
+                    maxLength={25}
+                    placeholder={`Button ${i + 1} label`}
+                    className="flex-1 px-4 py-2.5 bg-white border border-slate-200 rounded-lg text-sm text-slate-800 outline-none focus:border-[#00b050] focus:ring-1 focus:ring-[#00b050]"
+                  />
+                  <button type="button" onClick={() => setButtons(buttons.filter((_, idx) => idx !== i))} className="rounded p-2 text-slate-400 hover:text-rose-600">🗑</button>
+                </div>
+              ))}
             </div>
+            <button
+              type="button"
+              onClick={() => { if (buttons.length < 11) setButtons([...buttons, ""]); }}
+              disabled={buttons.length >= 11}
+              className="flex items-center justify-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-lg text-sm font-bold text-slate-700 w-48 hover:bg-slate-50 disabled:opacity-50"
+            >
+              + Add button
+            </button>
           </div>
           
           <div className="h-20"></div>
@@ -327,16 +385,18 @@ export function TemplateEditor() {
               </div>
               
               <div className="bg-white p-3 rounded-2xl rounded-tl-none shadow-sm self-start max-w-[90%] relative mt-2 text-[15px] leading-relaxed text-slate-800 font-sans">
-                {headerType !== "None" && (
+                {headerType === "Text" ? (
+                  headerText && <div className="mb-2 font-bold text-slate-900">{headerText}</div>
+                ) : headerType !== "None" ? (
                   <div className="mb-2 w-full h-32 bg-slate-100 rounded-lg flex items-center justify-center text-slate-400 text-sm font-semibold border border-slate-200">
                     {headerType} Header
                   </div>
-                )}
-                
+                ) : null}
+
                 <div className="whitespace-pre-wrap">
                   {bodyText || "Your message preview will appear here"}
                 </div>
-                
+
                 {footerText && (
                   <div className="text-xs text-slate-500 mt-2">
                     {footerText}
@@ -344,6 +404,14 @@ export function TemplateEditor() {
                 )}
 
                 <div className="text-[10px] text-slate-400 text-right mt-1">11:27 AM</div>
+
+                {buttons.filter(Boolean).length > 0 && (
+                  <div className="mt-2 -mx-3 -mb-3 border-t border-slate-100">
+                    {buttons.filter(Boolean).map((b, i) => (
+                      <div key={i} className="border-b border-slate-100 py-2 text-center text-sm font-semibold text-[#00a5f4] last:border-b-0">{b}</div>
+                    ))}
+                  </div>
+                )}
               </div>
 
             </div>
@@ -360,6 +428,8 @@ export function TemplateEditor() {
         </div>
 
       </div>
+
+      <AiTemplateModal open={aiOpen} onClose={() => setAiOpen(false)} onUse={(d) => { applyDraft(d); setAiOpen(false); }} />
     </div>
   );
 }

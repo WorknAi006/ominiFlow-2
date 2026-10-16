@@ -90,6 +90,13 @@ export function createContact(input: ContactCreateInput) {
   return request<Contact>("", { method: "POST", body: input });
 }
 
+export function createContactConversation(contactId: string, channelType?: string) {
+  return request<Conversation>(`/${encodeURIComponent(contactId)}/conversations`, {
+    method: "POST",
+    body: channelType ? { channel_type: channelType } : {},
+  });
+}
+
 export function updateContact(contactId: string, input: ContactUpdateInput) {
   return request<Contact>(`/${encodeURIComponent(contactId)}`, { method: "PATCH", body: input });
 }

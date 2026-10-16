@@ -35,7 +35,11 @@ class Campaign(Base, UUIDMixin, TimestampMixin):
         nullable=True,
     )
     text_content: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    
+
+    # WhatsApp template "components" sent with every recipient (same for the
+    # whole broadcast), e.g. [{"type": "body", "parameters": [...]}].
+    template_params: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(JSONB, nullable=True)
+
     # E.g., {"tags": ["uuid1", "uuid2"]}
     audience_config: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     

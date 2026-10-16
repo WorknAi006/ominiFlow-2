@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { useCreditBalance } from "@/lib/credits/use-credit-balance";
 import { createForm, getForm, updateForm, type WhatsAppForm } from "@/lib/whatsapp-forms/browser";
 
 const ZapIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>);
@@ -11,6 +12,7 @@ const ChevronLeftIcon = (props: React.SVGProps<SVGSVGElement>) => (<svg xmlns="h
 
 export function FormEditor({ id }: { id?: string }) {
   const router = useRouter();
+  const creditBalance = useCreditBalance();
   const [form, setForm] = useState<Partial<WhatsAppForm>>({ name: "", category: "Other", status: "draft" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -63,7 +65,7 @@ export function FormEditor({ id }: { id?: string }) {
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 bg-[#e8f5e9] text-[#2e7d32] px-4 py-2 rounded-full font-semibold text-sm border border-[#c8e6c9]">
               <ZapIcon className="w-4 h-4 fill-current" />
-              <span>461.12 AI Credits</span>
+              <span>{creditBalance === null ? "…" : creditBalance.toFixed(2)} AI Credits</span>
             </div>
             <button className="p-2.5 bg-white border border-slate-200 rounded-md text-slate-500 hover:bg-slate-50 shadow-sm">
               <SettingsIcon className="w-5 h-5" />

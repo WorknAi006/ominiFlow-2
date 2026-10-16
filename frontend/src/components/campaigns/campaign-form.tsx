@@ -1,25 +1,40 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { campaignsApi } from '@/lib/campaigns/browser';
+import { listTemplates } from '@/lib/templates/browser';
+import type { MessageTemplate } from '@/lib/api/templates';
 import { useRouter } from 'next/navigation';
+
+// Distinct {{1}}, {{2}} … body placeholders a template declares, in order.
+function bodyVariables(template: MessageTemplate | undefined): string[] {
+  if (!template) return [];
+  const body = template.components.find((c) => String((c as { type?: string }).type).toLowerCase() === 'body');
+  const text = body ? String((body as { text?: string }).text ?? '') : '';
+  const found = new Set<string>();
+  for (const m of text.matchAll(/\{\{\s*([a-z0-9_]+)\s*\}\}/gi)) found.add(m[1]);
+  return Array.from(found);
+}
 
 export function CampaignForm() {
   const router = useRouter();
   const [name, setName] = useState('');
   const [channelId, setChannelId] = useState('');
+  const [msgType, setMsgType] = useState<'text' | 'template'>('text');
   const [textContent, setTextContent] = useState('');
+  const [templateId, setTemplateId] = useState('');
+  const [templateValues, setTemplateValues] = useState<Record<string, string>>({});
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  
-  const [channels, setChannels] = useState<any[]>([]);
-  const [tags, setTags] = useState<any[]>([]);
+
+  const [channels, setChannels] = useState<{ id: string; name: string; channel_type: string }[]>([]);
+  const [tags, setTags] = useState<{ id: string; name: string }[]>([]);
+  const [templates, setTemplates] = useState<MessageTemplate[]>([]);
   const [audienceCount, setAudienceCount] = useState<number | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // Load channels and tags
     const loadDependencies = async () => {
       try {
         const [channelsRes, tagsRes] = await Promise.all([
@@ -28,28 +43,32 @@ export function CampaignForm() {
         ]);
         setChannels(channelsRes.items || []);
         setTags(tagsRes.items || []);
-      } catch (e: any) {
-        setError('Failed to load dependencies: ' + e.message);
+      } catch (e) {
+        setError('Failed to load dependencies: ' + (e instanceof Error ? e.message : String(e)));
       }
+      try {
+        const t = await listTemplates({ page_size: 100 });
+        setTemplates(t.items);
+      } catch { setTemplates([]); }
     };
     loadDependencies();
   }, []);
+
+  const selectedTemplate = useMemo(() => templates.find(t => t.id === templateId), [templates, templateId]);
+  const variables = useMemo(() => bodyVariables(selectedTemplate), [selectedTemplate]);
 
   const handlePreview = async () => {
     if (selectedTags.length === 0) {
       setAudienceCount(0);
       return;
     }
-    
     setPreviewing(true);
     setError(null);
     try {
-      const res = await campaignsApi.previewAudience({
-        audience_config: { tags: selectedTags }
-      });
+      const res = await campaignsApi.previewAudience({ audience_config: { tags: selectedTags } });
       setAudienceCount(res.total_contacts);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setPreviewing(false);
     }
@@ -61,19 +80,35 @@ export function CampaignForm() {
       setError('Name and Channel are required.');
       return;
     }
+    if (msgType === 'template' && !templateId) {
+      setError('Select a template.');
+      return;
+    }
+    if (msgType === 'text' && !textContent.trim()) {
+      setError('Enter the message text.');
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
     try {
-      await campaignsApi.create({
+      const payload: Record<string, unknown> = {
         name,
         channel_connection_id: channelId,
-        text_content: textContent,
-        audience_config: { tags: selectedTags }
-      });
+        audience_config: { tags: selectedTags },
+      };
+      if (msgType === 'template') {
+        payload.message_template_id = templateId;
+        payload.template_params = variables.length
+          ? [{ type: 'body', parameters: variables.map((v) => ({ type: 'text', text: templateValues[v] || '' })) }]
+          : [];
+      } else {
+        payload.text_content = textContent;
+      }
+      await campaignsApi.create(payload);
       router.push('/campaigns');
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
       setSubmitting(false);
     }
   };
@@ -88,7 +123,7 @@ export function CampaignForm() {
         )}
 
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Campaign Name</label>
+          <label className="block text-sm font-medium text-slate-700 mb-1">Broadcast Name</label>
           <input
             type="text"
             required
@@ -115,20 +150,68 @@ export function CampaignForm() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">Message Content (Text Only)</label>
-          <textarea
-            rows={4}
-            value={textContent}
-            onChange={(e) => setTextContent(e.target.value)}
-            className="w-full text-sm border-slate-300 rounded-lg shadow-sm"
-            placeholder="Write your message here..."
-          />
-          <p className="text-xs text-slate-500 mt-1">Note: Template selection is deferred for Phase 1. Text is used for preview.</p>
+          <label className="block text-sm font-medium text-slate-700 mb-2">Message</label>
+          <div className="inline-flex rounded-lg border border-slate-200 p-1 mb-3">
+            {(['template', 'text'] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setMsgType(t)}
+                className={`px-3 py-1.5 text-sm font-medium rounded-md ${msgType === t ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-50'}`}
+              >
+                {t === 'template' ? 'Template' : 'Text'}
+              </button>
+            ))}
+          </div>
+
+          {msgType === 'template' ? (
+            <div className="space-y-3">
+              <select
+                value={templateId}
+                onChange={(e) => { setTemplateId(e.target.value); setTemplateValues({}); }}
+                className="w-full text-sm border-slate-300 rounded-lg shadow-sm"
+              >
+                <option value="">Select a template</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id} disabled={!t.is_usable}>
+                    {t.name} · {t.language}{t.is_usable ? '' : ` (${t.status})`}
+                  </option>
+                ))}
+              </select>
+              {templates.length === 0 && (
+                <p className="text-xs text-slate-500">No synced templates. Sync them on the Templates page first.</p>
+              )}
+              {variables.map((v) => (
+                <div key={v}>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Variable {`{{${v}}}`}</label>
+                  <input
+                    type="text"
+                    value={templateValues[v] || ''}
+                    onChange={(e) => setTemplateValues((prev) => ({ ...prev, [v]: e.target.value }))}
+                    className="w-full text-sm border-slate-300 rounded-lg shadow-sm"
+                    placeholder={`Value for {{${v}}}`}
+                  />
+                </div>
+              ))}
+              <p className="text-xs text-slate-500">Templates can be delivered outside the 24-hour window — the right choice for broadcasts.</p>
+            </div>
+          ) : (
+            <div>
+              <textarea
+                rows={4}
+                value={textContent}
+                onChange={(e) => setTextContent(e.target.value)}
+                className="w-full text-sm border-slate-300 rounded-lg shadow-sm"
+                placeholder="Write your message here..."
+              />
+              <p className="text-xs text-slate-500 mt-1">Free text only reaches contacts inside the 24-hour customer-service window. Use a template to reach everyone.</p>
+            </div>
+          )}
         </div>
 
         <div className="border-t border-slate-200 pt-6">
           <h3 className="text-sm font-medium text-slate-900 mb-4">Audience Selection</h3>
-          
+
           <div className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Target Tags</label>
@@ -157,7 +240,7 @@ export function CampaignForm() {
               >
                 {previewing ? 'Calculating...' : 'Preview Audience Size'}
               </button>
-              
+
               {audienceCount !== null && (
                 <span className="text-sm font-medium text-indigo-600">
                   {audienceCount} recipients found

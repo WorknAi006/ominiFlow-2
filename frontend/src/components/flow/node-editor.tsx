@@ -62,9 +62,14 @@ export function NodeEditor({
   const isMedia = MEDIA_MESSAGE_TYPES.has(messageType);
   const isText = messageType === "text";
   const showMessageBox = ["text", "button", "list", "get_user_data", "audio", "document", "image", "video"].includes(messageType);
-  // Header + footer apply to WhatsApp interactive button messages (WhatsApp
-  // does not allow them on plain text / media messages).
-  const showHeaderFooter = messageType === "button";
+  // Header + footer are shown for every message-body node. On button messages
+  // they map to a real WhatsApp interactive header/footer; on text / media /
+  // list they are composed into the body (a bold first line + a footer line),
+  // since WhatsApp only supports native header/footer on interactive messages.
+  const showHeaderFooter = showMessageBox;
+  // Media header types (image/video/document) are only deliverable on button
+  // (interactive) messages; elsewhere only a text header is composed in.
+  const headerOptions = messageType === "button" ? HEADER_TYPES : HEADER_TYPES.filter((h) => h.value === "none" || h.value === "text");
 
   useEffect(() => {
     if (messageType === "template" && templates.length === 0) {
@@ -162,8 +167,11 @@ export function NodeEditor({
           <div>
             {label("Header (optional)")}
             <select value={headerType} onChange={(e) => setHeader({ type: e.target.value as HeaderData["type"] })} className="block w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm">
-              {HEADER_TYPES.map((h) => <option key={h.value} value={h.value}>{h.label}</option>)}
+              {headerOptions.map((h) => <option key={h.value} value={h.value}>{h.label}</option>)}
             </select>
+            {messageType !== "button" && headerType === "text" && (
+              <span className="mt-1 block text-xs text-slate-400">Added as a bold first line (WhatsApp shows native headers only on button messages).</span>
+            )}
             {headerType === "text" && (
               <input value={String(header.text ?? "")} onChange={(e) => setHeader({ text: e.target.value })} maxLength={60} placeholder="Header text (max 60)" className={input} />
             )}

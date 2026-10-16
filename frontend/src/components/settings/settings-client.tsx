@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ChannelsClient } from "@/components/channels/channels-client";
+import { flowsApi, type FlowSummary } from "@/lib/flows/browser";
+import { useCreditBalance } from "@/lib/credits/use-credit-balance";
 
 type Tab = "General" | "Channels" | "Security" | "Activity";
 
@@ -15,11 +17,15 @@ interface UserSession {
 }
 
 export function SettingsClient() {
+  const creditBalance = useCreditBalance();
   const [activeTab, setActiveTab] = useState<Tab>("General");
   const [routingAction, setRoutingAction] = useState("Flow");
-  const [masterFlow, setMasterFlow] = useState("user messages");
+  const [masterFlowId, setMasterFlowId] = useState("");
+  const [flows, setFlows] = useState<FlowSummary[]>([]);
+  const [savingRouting, setSavingRouting] = useState(false);
+  const [routingNotice, setRoutingNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [mmLiteEnabled, setMmLiteEnabled] = useState(false);
-  
+
   const [sessions, setSessions] = useState<UserSession[]>([]);
 
   useEffect(() => {
@@ -30,11 +36,56 @@ export function SettingsClient() {
         .catch(console.error);
     }
   }, [activeTab]);
-  
+
+  // Load the tenant's flows and current global routing on the General tab.
+  useEffect(() => {
+    if (activeTab !== "General") return;
+    flowsApi.list().then((r) => setFlows(r.items)).catch(() => setFlows([]));
+    fetch("/api/routing-config", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.fallback_action === "flow") {
+          setRoutingAction("Flow");
+          setMasterFlowId(data.fallback_flow_id ?? "");
+        } else if (data && data.fallback_action === "ai") {
+          setRoutingAction("Chatbot");
+        }
+      })
+      .catch(() => {});
+  }, [activeTab]);
+
   const [activityTab, setActivityTab] = useState<"Important" | "Everything">("Important");
 
-  const handleSaveRouting = () => {
-    alert("Global routing saved successfully.");
+  const handleSaveRouting = async () => {
+    setRoutingNotice(null);
+    const useFlow = routingAction === "Flow";
+    const useAi = routingAction === "Chatbot";
+    if (useFlow && !masterFlowId) {
+      setRoutingNotice({ kind: "error", text: "Select a master flow first." });
+      return;
+    }
+    setSavingRouting(true);
+    try {
+      const body = useFlow
+        ? { fallback_action: "flow", fallback_flow_id: masterFlowId }
+        : useAi
+          ? { fallback_action: "ai", fallback_flow_id: null }
+          : { fallback_action: "none", fallback_flow_id: null };
+      const res = await fetch("/api/routing-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => null);
+        throw new Error(d?.error || "Could not save global routing.");
+      }
+      setRoutingNotice({ kind: "success", text: "Global routing saved successfully." });
+    } catch (e) {
+      setRoutingNotice({ kind: "error", text: e instanceof Error ? e.message : "Could not save global routing." });
+    } finally {
+      setSavingRouting(false);
+    }
   };
 
   const handleSignOutSession = async (id: string) => {
@@ -65,7 +116,7 @@ export function SettingsClient() {
         </div>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 bg-[#e8f6f0] border border-[#b2e2cd] px-4 py-2 rounded-full text-[#147a4d] font-bold text-[13px]">
-            <span>⚡</span> 461.12 AI Credits
+            <span>⚡</span> {creditBalance === null ? "…" : creditBalance.toFixed(2)} AI Credits
           </div>
           <button className="w-10 h-10 flex items-center justify-center bg-white border border-[#d6d6e0] rounded-full text-[#6d6e7c] hover:bg-[#f7f8fc]">
             ⚙
@@ -120,28 +171,42 @@ export function SettingsClient() {
                 </div>
               </div>
 
-              <div className="border border-[#f5dfb8] bg-[#fffcf5] rounded-xl p-5 mt-2">
-                <label className="block text-[#9a6a16] text-[13px] font-bold mb-2">Select Master Flow Collection</label>
-                <select 
-                  value={masterFlow}
-                  onChange={(e) => setMasterFlow(e.target.value)}
-                  className="w-full h-11 border border-[#f5dfb8] rounded-xl px-4 text-[#0b1028] text-[13px] bg-white outline-none focus:border-[#4f46ff] appearance-none"
-                >
-                  <option>user messages</option>
-                  <option>default fallback</option>
-                </select>
-                <p className="mt-3 text-[#9a6a16] text-[12px]">
-                  This flow will be triggered unconditionally when a user types anything that doesn't match an exact keyword rule.
-                </p>
-              </div>
+              {routingAction === "Flow" && (
+                <div className="border border-[#f5dfb8] bg-[#fffcf5] rounded-xl p-5 mt-2">
+                  <label className="block text-[#9a6a16] text-[13px] font-bold mb-2">Select Master Flow Collection</label>
+                  <select
+                    value={masterFlowId}
+                    onChange={(e) => setMasterFlowId(e.target.value)}
+                    className="w-full h-11 border border-[#f5dfb8] rounded-xl px-4 text-[#0b1028] text-[13px] bg-white outline-none focus:border-[#4f46ff] appearance-none"
+                  >
+                    <option value="">Select a flow…</option>
+                    {flows.map((f) => (
+                      <option key={f.id} value={f.id}>{f.name}{f.status === "draft" ? " (draft)" : ""}</option>
+                    ))}
+                  </select>
+                  {flows.length === 0 && (
+                    <p className="mt-2 text-[#9a6a16] text-[12px]">No flows yet — create one on the Flow page first.</p>
+                  )}
+                  <p className="mt-3 text-[#9a6a16] text-[12px]">
+                    This flow will be triggered unconditionally when a user types anything that doesn't match an exact keyword rule.
+                  </p>
+                </div>
+              )}
             </div>
-            
+
+            {routingNotice && (
+              <div className={`mt-5 rounded-xl px-4 py-3 text-[13px] font-semibold ${routingNotice.kind === "success" ? "bg-[#e8f6f0] text-[#147a4d] border border-[#b2e2cd]" : "bg-[#fdecec] text-[#c0392b] border border-[#f5c6c6]"}`}>
+                {routingNotice.text}
+              </div>
+            )}
+
             <div className="mt-6 flex justify-end">
-              <button 
+              <button
                 onClick={handleSaveRouting}
-                className="bg-[#158e57] hover:bg-[#117648] text-white px-5 py-2.5 rounded-xl font-bold text-[13px] transition-colors"
+                disabled={savingRouting}
+                className="bg-[#158e57] hover:bg-[#117648] disabled:opacity-60 text-white px-5 py-2.5 rounded-xl font-bold text-[13px] transition-colors"
               >
-                Save Global Routing
+                {savingRouting ? "Saving…" : "Save Global Routing"}
               </button>
             </div>
           </div>

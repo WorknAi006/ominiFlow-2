@@ -2,12 +2,16 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useCreditBalance } from "@/lib/credits/use-credit-balance";
+import { AiTemplateModal, AI_TEMPLATE_DRAFT_KEY } from "@/components/templates/ai-template-modal";
 
 import {
   TemplateApiError,
   getTemplate,
   listTemplates,
   syncTemplates,
+  type AiTemplateDraft,
   type MessageTemplate,
 } from "@/lib/templates/browser";
 import { listChannels, type ChannelConnection } from "@/lib/channels/browser";
@@ -77,6 +81,19 @@ function splitComponents(template: MessageTemplate): Part {
 }
 
 export function TemplatesClient() {
+  const router = useRouter();
+  const creditBalance = useCreditBalance();
+  const [aiOpen, setAiOpen] = useState(false);
+
+  function useAiDraft(draft: AiTemplateDraft) {
+    try {
+      sessionStorage.setItem(AI_TEMPLATE_DRAFT_KEY, JSON.stringify(draft));
+    } catch {
+      // sessionStorage may be unavailable; the editor just starts blank.
+    }
+    setAiOpen(false);
+    router.push("/templates/new");
+  }
   const [templates, setTemplates] = useState<MessageTemplate[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -206,7 +223,7 @@ export function TemplatesClient() {
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 bg-[#e8f5e9] text-[#2e7d32] px-4 py-2 rounded-full font-semibold text-sm border border-[#c8e6c9]">
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>
-              <span>461.12 AI Credits</span>
+              <span>{creditBalance === null ? "…" : creditBalance.toFixed(2)} AI Credits</span>
             </div>
             <button className="p-2.5 bg-white border border-slate-200 rounded-md text-slate-500 hover:bg-slate-50 shadow-sm">
               <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
@@ -243,7 +260,7 @@ export function TemplatesClient() {
             <button className="flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 rounded-lg font-bold text-sm text-slate-700 hover:bg-slate-50 shadow-sm">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" /></svg> Filter
             </button>
-            <button className="flex items-center gap-2 px-4 py-2.5 bg-purple-50 border border-purple-100 rounded-lg font-bold text-sm text-purple-700 hover:bg-purple-100 shadow-sm">
+            <button onClick={() => setAiOpen(true)} className="flex items-center gap-2 px-4 py-2.5 bg-purple-50 border border-purple-100 rounded-lg font-bold text-sm text-purple-700 hover:bg-purple-100 shadow-sm">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg> Create with AI
             </button>
             <Link href="/templates/new" className="flex items-center gap-2 px-4 py-2.5 bg-[#00b050] hover:bg-[#009040] text-white rounded-lg font-bold text-sm shadow-sm">
@@ -254,7 +271,7 @@ export function TemplatesClient() {
 
         {/* Big Cards */}
         <div className="grid grid-cols-2 gap-6 mb-10">
-          <button className="flex flex-col items-center justify-center py-12 px-6 bg-white border-2 border-dashed border-purple-200 rounded-2xl hover:border-purple-400 hover:bg-purple-50/30 transition-all text-center">
+          <button onClick={() => setAiOpen(true)} className="flex flex-col items-center justify-center py-12 px-6 bg-white border-2 border-dashed border-purple-200 rounded-2xl hover:border-purple-400 hover:bg-purple-50/30 transition-all text-center">
             <div className="w-14 h-14 bg-[#aa42d4] rounded-full flex items-center justify-center text-white mb-4 shadow-sm">
               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
             </div>
@@ -270,6 +287,8 @@ export function TemplatesClient() {
             <p className="text-sm text-slate-500">or start from our library &rarr;</p>
           </Link>
         </div>
+
+        <AiTemplateModal open={aiOpen} onClose={() => setAiOpen(false)} onUse={useAiDraft} />
 
         {/* Existing filters for table */}
         {(hasActiveFilters || templates.length > 0) && (

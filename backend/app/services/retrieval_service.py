@@ -22,26 +22,26 @@ def semantic_search(db: Session, tenant_id: uuid.UUID, query: str, limit: int = 
     """
     if not query or not query.strip():
         return []
-        
-    # 1. Fetch Provider (fails safely or returns mock)
+
+    # 1. Fetch Provider (real OpenAI when OPENAI_API_KEY is set, else mock).
     provider = get_embedding_provider(tenant_id.hex)
-    
-    # 2. Embed Query
+
+    # 2. Embed Query.
     try:
         query_vector = provider.embed_text(query)
     except Exception as e:
         raise RetrievalError(f"Embedding provider failed: {e}")
-        
-    # 3. Retrieve Chunks
-    # Since pgvector is not installed and PostgreSQL ARRAY(Float) does not natively support
-    # performant vector similarity operations (like <-> or dot product indexing),
-    # true semantic search is mathematically complex and slow to execute here natively.
-    
+
+    # 3. Retrieve Chunks. Execution requires performant vector similarity,
+    # which needs the 'pgvector' extension (PostgreSQL ARRAY(Float) cannot
+    # index cosine/dot distance). The embedding provider and model foundation
+    # are complete, but search execution is deferred until pgvector is enabled.
+    _ = query_vector
     raise SemanticSearchDeferredError(
         "Semantic search requires the 'pgvector' extension or an external vector database. "
-        "The model foundation and interface are complete, but execution is deferred."
+        "The embedding provider and model foundation are complete, but execution is deferred."
     )
-    
+
     # FUTURE IMPLEMENTATION (with pgvector):
     # results = db.query(KnowledgeDocumentChunk, KnowledgeChunkEmbedding).join(
     #     KnowledgeChunkEmbedding, KnowledgeDocumentChunk.id == KnowledgeChunkEmbedding.chunk_id
@@ -50,7 +50,7 @@ def semantic_search(db: Session, tenant_id: uuid.UUID, query: str, limit: int = 
     # ).order_by(
     #     KnowledgeChunkEmbedding.embedding.cosine_distance(query_vector)
     # ).limit(limit).all()
-    # 
+    #
     # return [{"chunk_id": chunk.id, "text": chunk.text_content, "distance": ...} for chunk, emb in results]
 
 def check_tenant_has_knowledge_bases(db: Session, tenant_id: uuid.UUID) -> bool:

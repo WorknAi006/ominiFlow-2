@@ -210,7 +210,7 @@ class InboundTests(ProcessorTestCase):
         [reply] = self.messages_for(external_message_id="wamid.reply")
         self.assertEqual(reply.reply_to_message_id, original.id)
 
-    def test_resolved_conversation_starts_new_one(self):
+    def test_inbound_reopens_the_existing_conversation(self):
         self.process(self.message_event(self.wa_a, self.text_message("wamid.first")))
         [first] = self.conversations_for(self.tenant_a)
         first.status = ConversationStatus.RESOLVED
@@ -218,10 +218,10 @@ class InboundTests(ProcessorTestCase):
 
         self.process(self.message_event(self.wa_a, self.text_message("wamid.second")))
         conversations = self.conversations_for(self.tenant_a)
-        self.assertEqual(len(conversations), 2)
-        [new] = [c for c in conversations if c.id != first.id]
-        self.assertEqual(new.status, "open")
-        self.assertEqual(new.unread_count, 1)
+        self.assertEqual(len(conversations), 1)
+        self.assertEqual(conversations[0].id, first.id)
+        self.assertEqual(conversations[0].status, "open")
+        self.assertEqual(conversations[0].unread_count, 2)
 
 
 # =========================

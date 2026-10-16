@@ -18,6 +18,7 @@ const navigation = [
   { label: "Postings", href: "/postings", mark: "P" },
   { label: "E-commerce", href: "/e-commerce", mark: "E" },
   { label: "Automations", href: "/automations", mark: "A" },
+  { label: "Broadcast", href: "/campaigns", mark: "B" },
   { label: "Flow", href: "/flow", mark: "F" },
   { label: "AI Configuration", href: "/ai-configuration", mark: "✨" },
   { label: "Templates", href: "/templates", mark: "▤" },

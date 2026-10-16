@@ -10,6 +10,7 @@ class CampaignBase(BaseModel):
     channel_connection_id: uuid.UUID
     message_template_id: Optional[uuid.UUID] = None
     text_content: Optional[str] = None
+    template_params: Optional[List[Dict[str, Any]]] = None
     audience_config: Optional[Dict[str, Any]] = None
     scheduled_at: Optional[datetime] = None
 
@@ -21,6 +22,7 @@ class CampaignUpdate(BaseModel):
     channel_connection_id: Optional[uuid.UUID] = None
     message_template_id: Optional[uuid.UUID] = None
     text_content: Optional[str] = None
+    template_params: Optional[List[Dict[str, Any]]] = None
     audience_config: Optional[Dict[str, Any]] = None
     scheduled_at: Optional[datetime] = None
     status: Optional[CampaignStatus] = None

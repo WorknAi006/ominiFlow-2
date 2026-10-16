@@ -97,6 +97,53 @@ class TestCampaignExecution(DatabaseTestCase):
         self.assertTrue(all(r.external_message_id == "ext-id-1" for r in recipients))
 
     @patch("app.services.campaign_execution_service.send_message")
+    def test_worker_sends_template_broadcast(self, mock_send):
+        from app.models.message_template import MessageTemplate
+        from app.schemas.message import TemplateMessageCreate
+
+        self.channel_a.access_token_encrypted = b"dummy"
+        self.channel_a.external_account_id = "123"
+        tpl = MessageTemplate(
+            tenant_id=self.tenant_a.id,
+            channel_connection_id=self.channel_a.id,
+            name="promo_offer",
+            language="en_US",
+            status="approved",
+            components=[{"type": "BODY", "text": "Hi {{1}}, sale is on!"}],
+        )
+        self.db.add(tpl)
+        self.db.commit()
+
+        camp = Campaign(
+            tenant_id=self.tenant_a.id,
+            name="TemplatePromo",
+            channel_connection_id=self.channel_a.id,
+            message_template_id=tpl.id,
+            template_params=[{"type": "body", "parameters": [{"type": "text", "text": "Alex"}]}],
+            audience_config={"tags": [str(self.tag_1.id)]},
+            status=CampaignStatus.DRAFT,
+        )
+        self.db.add(camp)
+        self.db.commit()
+
+        CampaignService(self.db).start_campaign(self.tenant_a.id, camp.id)
+
+        class DummyMsg:
+            external_message_id = "ext-tpl-1"
+        mock_send.return_value = DummyMsg()
+
+        result = process_pending_recipients(self.db, limit=5)
+        self.assertEqual(result["sent"], 2)
+
+        # A real template message (not text) was built and sent.
+        sent = [c.args[4] for c in mock_send.call_args_list]
+        self.assertTrue(sent)
+        self.assertIsInstance(sent[0], TemplateMessageCreate)
+        self.assertEqual(sent[0].template_name, "promo_offer")
+        self.assertEqual(sent[0].language, "en_US")
+        self.assertEqual(sent[0].components[0].parameters[0].text, "Alex")
+
+    @patch("app.services.campaign_execution_service.send_message")
     def test_worker_handles_failure(self, mock_send):
         self.channel_a.access_token_encrypted = b"dummy"
         self.channel_a.external_account_id = "123"
