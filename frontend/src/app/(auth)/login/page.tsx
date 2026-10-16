@@ -29,8 +29,16 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       {params.registered === "1" && (
         <p role="status" className="status-message mt-6">Your workspace is ready. Sign in with the account you just created.</p>
       )}
+      {params.reset === "1" && (
+        <p role="status" className="status-message mt-6">Your password was changed. Sign in with your new password.</p>
+      )}
       {params.reason === "session-expired" && (
         <p role="status" className="status-message status-message-neutral mt-6">Your session has expired. Sign in again to continue.</p>
+      )}
+      {params.reason === "logout-partial" && (
+        <p role="status" className="status-message status-message-neutral mt-6">
+          This browser is signed out. The server could not revoke the device session; sign out again when service is available.
+        </p>
       )}
 
       <div className="mt-7"><AuthForm mode="login" destination={destination} /></div>

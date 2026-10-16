@@ -172,6 +172,9 @@ class FakeGraph:
                 return httpx.Response(200, json={"data": apps})
             return httpx.Response(200, json={"success": True})
 
+        if parts[1] == "message_templates" and request.method == "POST":
+            return httpx.Response(200, json={"id": "template-123", "status": "PENDING"})
+
         return _graph_error(404, "Unknown path.", 100)
 
 
@@ -322,6 +325,27 @@ class ConnectTests(WhatsAppTestCase):
         channel = self.reload(self.wa_a)
         self.assertEqual(get_credential_service().decrypt(channel.access_token_encrypted), GOOD_TOKEN)
         self.assert_no_secrets(response.text)
+
+    def test_embedded_signup_config_is_returned_only_when_configured(self):
+        original = settings.meta_embedded_signup_config_id
+        try:
+            settings.meta_embedded_signup_config_id = "123456789"
+            response = self.client.get(
+                "/api/v1/channels/whatsapp/embedded-signup/config",
+                headers=self.auth(self.owner, self.tenant_a),
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["config_id"], "123456789")
+            self.assertEqual(response.json()["app_id"], APP_ID)
+
+            settings.meta_embedded_signup_config_id = ""
+            missing = self.client.get(
+                "/api/v1/channels/whatsapp/embedded-signup/config",
+                headers=self.auth(self.owner, self.tenant_a),
+            )
+            self.assertEqual(missing.status_code, 503)
+        finally:
+            settings.meta_embedded_signup_config_id = original
 
     def test_token_expiry_stored(self):
         response = self.connect(self.wa_a, access_token=EXPIRING_TOKEN)
@@ -536,6 +560,25 @@ class ProviderTests(WhatsAppTestCase):
         connection = ChannelConnection(external_account_id=PHONE, external_business_id=WABA)
         info = self.provider.get_account_info(connection, ProviderCredentials(GOOD_TOKEN))
         self.assertEqual(info.metadata["display_phone_number"], "+1 555-0100")
+
+    def test_create_template_posts_meta_template_payload(self):
+        payload = {
+            "name": "order_update",
+            "language": "en_US",
+            "category": "UTILITY",
+            "components": [{"type": "BODY", "text": "Order {{1}} is ready"}],
+        }
+        response = self.provider.create_template(
+            ProviderCredentials(GOOD_TOKEN), WABA, payload,
+        )
+        self.assertEqual(response["id"], "template-123")
+        request = next(
+            request for request in self.graph.requests
+            if request.url.path.endswith("/message_templates")
+        )
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(json.loads(request.content), payload)
+        self.assertNotIn(GOOD_TOKEN, request.url.query.decode())
 
     def test_disconnect_unsubscribes(self):
         connection = ChannelConnection(external_account_id=PHONE, external_business_id=WABA)

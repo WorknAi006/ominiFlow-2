@@ -26,7 +26,14 @@ export interface ConnectionCheck {
 export interface WhatsAppConnectInput {
   phone_number_id: string;
   waba_id: string;
-  access_token: string;
+  access_token?: string;
+  code?: string;
+}
+
+export interface WhatsAppEmbeddedSignupConfig {
+  app_id: string;
+  config_id: string;
+  graph_api_version: string;
 }
 
 export interface FacebookConnectInput {
@@ -145,6 +152,10 @@ export function connectWhatsApp(channelId: string, input: WhatsAppConnectInput) 
     method: "POST",
     body: input,
   });
+}
+
+export function getWhatsAppEmbeddedSignupConfig() {
+  return request<WhatsAppEmbeddedSignupConfig>("/whatsapp/embedded-signup/config");
 }
 
 export function testWhatsAppConnection(channelId: string) {

@@ -130,6 +130,9 @@ class MetaGraphClient:
         data: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
         files: dict[str, Any] | None = None,
+        content: bytes | None = None,
+        request_headers: dict[str, str] | None = None,
+        authorization_scheme: str = "Bearer",
         with_proof: bool = True,
         secrets: Iterable[str | None] = (),
     ) -> dict[str, Any]:
@@ -137,11 +140,13 @@ class MetaGraphClient:
         headers = {"Accept": "application/json"}
 
         if access_token:
-            headers["Authorization"] = f"Bearer {access_token}"
+            headers["Authorization"] = f"{authorization_scheme} {access_token}"
             if with_proof:
                 query["appsecret_proof"] = appsecret_proof(
                     self._app_secret, access_token,
                 )
+        if request_headers:
+            headers.update(request_headers)
 
         all_secrets = [access_token, self._app_secret, *secrets]
 
@@ -153,6 +158,7 @@ class MetaGraphClient:
                 data=data,
                 json=json,
                 files=files,
+                content=content,
                 headers=headers,
             )
         except httpx.HTTPError:

@@ -30,8 +30,34 @@ list. If it is empty, the existing `FRONTEND_URL` value is used as a
 single-origin fallback (default `http://localhost:3000`). The default CORS
 policy permits only `GET`, `POST`, `PATCH`, and `DELETE`, with `Authorization`
 and `Content-Type` headers. It does not enable cross-site cookies. Set
-`NEXT_PUBLIC_API_URL` in the frontend environment to the backend API origin;
-the frontend currently calls the API directly and has no proxy rewrite.
+`NEXT_PUBLIC_API_URL` in the frontend environment to the backend API origin.
+The auth flow also uses server-side routes, configured with
+`OMNIFLOW_API_URL` (or falls back to `NEXT_PUBLIC_API_URL`).
+
+### Shared login across devices
+
+User accounts, password hashes and workspace data are stored in PostgreSQL,
+not synchronized between computers. For the same login and data on multiple
+devices, deploy one shared frontend, one backend service (or instances using
+the same configuration), and one shared PostgreSQL database. Every device
+must open the same deployed frontend URL. Keep the same `JWT_SECRET` across
+backend instances and configure the frontend server's `OMNIFLOW_API_URL` plus
+the browser-facing `NEXT_PUBLIC_API_URL` to the shared backend.
+
+`localhost` always means the computer currently being used. Two development
+computers using `localhost` normally connect to different local databases;
+creating an account on one does not create it on the other. Do not expose a
+local database or development server directly to the public internet as a
+substitute for a shared deployment.
+
+### Password reset and logout
+
+Sign-out clears the browser cookie and revokes its backend device session.
+Forgot-password requests are recorded for platform super-admin review. An
+admin can approve a request from **Password reset requests** in the app; the
+user then receives a one-time reset link by email. Configure the SMTP values
+in `.env` for delivery. Reset links expire after `PASSWORD_RESET_EXPIRE_MINUTES`
+(default 60), and a successful reset signs out the user's other devices.
 
 ### Run
 
@@ -106,6 +132,8 @@ All endpoints are under `/api/v1`. Authenticated endpoints need
 | GET | `/messages/{message_id}/media` (stream) | `message:read` |
 | GET | `/channels/{channel_id}/templates?status=&search=&include_inactive=` | `template:read` |
 | POST | `/channels/{channel_id}/templates/sync` | `template:sync` |
+| POST | `/templates/submit` | `template:sync` |
+| POST | `/templates/channels/{channel_id}/media-upload` | `message:create` |
 | GET | `/templates/{template_id}` | `template:read` |
 
 ## Tenant isolation
@@ -207,11 +235,38 @@ Webhooks never accept a `tenant_id` from the caller.
 | `META_APP_ID`, `META_APP_SECRET` | Meta app credentials. Used for token verification, `appsecret_proof` and webhook signatures. |
 | `WHATSAPP_WEBHOOK_VERIFY_TOKEN` | Random string you also enter in the Meta dashboard. |
 | `META_GRAPH_API_VERSION` | Default `v23.0`. |
+| `META_EMBEDDED_SIGNUP_CONFIG_ID` | Facebook Login for Business configuration ID for WhatsApp Embedded Signup v4. |
 
 In the Meta app dashboard, set the webhook callback URL to
 `https://<host>/api/v1/webhooks/whatsapp` and subscribe to the `messages`
 field. Without these values, connect and webhooks return 503 (fail
 closed).
+
+For tenant self-service onboarding, create a Facebook Login for Business
+configuration with **Embedded Signup** and the **Cloud API** product, then
+set its ID as `META_EMBEDDED_SIGNUP_CONFIG_ID`. Add the deployed Omniflow
+domain to the Meta app's allowed domains/valid OAuth redirect domains and
+request advanced access to `whatsapp_business_management` and
+`whatsapp_business_messaging`. Embedded Signup v2 was deprecated on
+October 15, 2026; this application launches the v4 configuration.
+
+Platform administrators can manage the shared template library. To grant or
+revoke the global role for an existing account, run from `backend`:
+
+```powershell
+python -m app.cli.platform_admin --grant --email admin@example.com
+python -m app.cli.platform_admin --revoke --email admin@example.com
+```
+
+Run `alembic upgrade head` before granting the role. Tenants see active
+library entries and can submit a copy into their own connected WABA. Meta
+reviews each WABA's copy independently; synchronize that tenant's templates
+after review to refresh its approval status. No template or recipient list is
+shared across tenant workspaces.
+
+The shared library currently supports Marketing and Utility BODY-only
+templates with numbered text placeholders. Authentication templates,
+headers, media, and buttons are not part of this initial workflow.
 
 ### Connect flow
 
@@ -399,6 +454,19 @@ Inbox API -> POST /conversations/{id}/messages -> WhatsApp provider -> Meta
 
 ## WhatsApp templates
 
+- The dashboard editor's **Save Draft** action stores a tenant/channel-scoped
+  draft in `message_templates`. **Submit to Meta** sends the template
+  definition to the selected connected WABA; variable placeholders require
+  example values, and image/video/document headers require a review sample
+  (JPEG/PNG up to 5 MB, MP4 up to 16 MB, PDF up to 100 MB). Meta approval is
+  still required and applies separately to each WABA. Sync the channel after
+  review to refresh the status before sending.
+- **One-to-one and broadcasts:** choose an active, approved template for the
+  same WhatsApp channel. For image/video/document headers, choose the media
+  file when sending; Omniflow uploads it to that channel's WhatsApp number and
+  sends the returned media ID with the template. Broadcasts keep the template
+  parameter values and uploaded media ID with the campaign. Meta's recipient
+  eligibility and template rules still apply.
 - `POST /channels/{id}/templates/sync` fetches `/{waba}/message_templates`,
   following paging cursors only. Items are validated (name, language,
   status, components) and upserted on

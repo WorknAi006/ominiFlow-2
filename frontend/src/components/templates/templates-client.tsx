@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCreditBalance } from "@/lib/credits/use-credit-balance";
 import { AiTemplateModal, AI_TEMPLATE_DRAFT_KEY } from "@/components/templates/ai-template-modal";
+import { PlatformTemplateLibrary } from "@/components/templates/platform-template-library";
 
 import {
   TemplateApiError,
@@ -239,6 +240,8 @@ export function TemplatesClient() {
             <button type="button" onClick={() => setNotice(null)}>×</button>
           </div>
         )}
+
+        <PlatformTemplateLibrary />
         
         {/* Actions Row */}
         <div className="flex items-center justify-between mb-8">

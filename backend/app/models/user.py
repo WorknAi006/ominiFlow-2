@@ -47,3 +47,11 @@ class User(Base, UUIDMixin, TimestampMixin):
         server_default="false",
         nullable=False,
     )
+
+    is_platform_super_admin: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+        index=True,
+    )

@@ -101,9 +101,23 @@ export function buildInboxProxyTarget(
     if (method === "GET" && segments[0] === "contacts" && params.size === 0) {
       return { backendPath: `/contacts/${id}`, query, kind: "contact" };
     }
-    if (method === "GET" && segments[0] === "channels" && params.size === 2 && params.get("page") === "1" && params.get("page_size") === "100") {
-      return { backendPath: `/channels/${id}/templates`, query: new URLSearchParams({ page: "1", page_size: "100" }), kind: "templates" };
-    }
+  }
+
+  if (
+    method === "GET" &&
+    segments.length === 3 &&
+    segments[0] === "channels" &&
+    UUID_PATTERN.test(segments[1]) &&
+    segments[2] === "templates" &&
+    params.size === 2 &&
+    params.get("page") === "1" &&
+    params.get("page_size") === "100"
+  ) {
+    return {
+      backendPath: `/channels/${segments[1]}/templates`,
+      query: new URLSearchParams({ page: "1", page_size: "100" }),
+      kind: "templates",
+    };
   }
 
   if (segments.length === 3 && UUID_PATTERN.test(segments[1])) {

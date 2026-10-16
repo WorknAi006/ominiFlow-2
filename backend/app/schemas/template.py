@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -18,11 +19,42 @@ class LocalTemplateCreate(BaseModel):
     name: str = Field(pattern=TEMPLATE_NAME_PATTERN)
     language: str = Field(pattern=LANGUAGE_PATTERN)
     category: str | None = Field(default=None, max_length=30)
+    header_format: Literal["NONE", "TEXT", "IMAGE", "VIDEO", "DOCUMENT"] = "NONE"
     header_text: str | None = Field(default=None, max_length=60)
     body_text: str = Field(min_length=1, max_length=1024)
     footer_text: str | None = Field(default=None, max_length=60)
     buttons: list[str] = Field(default_factory=list, max_length=11)
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class LocalTemplateSubmission(BaseModel):
+    channel_connection_id: UUID
+    name: str = Field(pattern=TEMPLATE_NAME_PATTERN)
+    language: str = Field(pattern=LANGUAGE_PATTERN)
+    category: Literal["MARKETING", "UTILITY", "AUTHENTICATION"]
+    header_format: Literal["NONE", "TEXT", "IMAGE", "VIDEO", "DOCUMENT"] = "NONE"
+    header_text: str | None = Field(default=None, max_length=60)
+    body_text: str = Field(min_length=1, max_length=1024)
+    footer_text: str | None = Field(default=None, max_length=60)
+    buttons: list[str] = Field(default_factory=list, max_length=3)
+    body_examples: list[str] = Field(default_factory=list, max_length=10)
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    @model_validator(mode="after")
+    def valid_examples_and_header(self) -> "LocalTemplateSubmission":
+        placeholders = list(dict.fromkeys(re.findall(r"\{\{\s*(\d+)\s*\}\}", self.body_text)))
+        if len(placeholders) > 10 or placeholders != [str(i) for i in range(1, len(placeholders) + 1)]:
+            raise ValueError("Use numbered body placeholders in order, from {{1}}, with at most 10.")
+        if len(self.body_examples) != len(placeholders) or any(not value.strip() for value in self.body_examples):
+            raise ValueError("Provide one non-empty example value for each body placeholder.")
+        if self.header_format == "TEXT" and not (self.header_text or "").strip():
+            raise ValueError("Text headers require header text.")
+        if self.header_format != "TEXT" and self.header_text:
+            raise ValueError("Header text can only be set for a text header.")
+        if any(not button.strip() or len(button) > 25 for button in self.buttons):
+            raise ValueError("Quick-reply button labels must be between 1 and 25 characters.")
+        return self
 
 
 class TemplateResponse(BaseModel):
@@ -69,6 +101,7 @@ class TemplateParameter(BaseModel):
     text: str | None = Field(default=None, min_length=1, max_length=1024)
     parameter_name: str | None = Field(default=None, pattern=r"^[a-z_][a-z0-9_]{0,63}$")
     link: str | None = Field(default=None, max_length=2000)
+    id: str | None = Field(default=None, min_length=1, max_length=255)
     filename: str | None = Field(default=None, min_length=1, max_length=240)
     payload: str | None = Field(default=None, min_length=1, max_length=256)
 
@@ -86,13 +119,21 @@ class TemplateParameter(BaseModel):
 
     @model_validator(mode="after")
     def fields_match_type(self) -> "TemplateParameter":
-        required = {"text": "text", "payload": "payload"}.get(self.type, "link")
-        if getattr(self, required) is None:
-            raise ValueError(f"{self.type} parameters require '{required}'.")
-
-        allowed = {required, "parameter_name"} | ({"filename"} if self.type == "document" else set())
+        if self.type in ("text", "payload"):
+            required = self.type
+            if getattr(self, required) is None:
+                raise ValueError(f"{self.type} parameters require '{required}'.")
+            media_fields: set[str] = set()
+        else:
+            if (self.link is None) == (self.id is None):
+                raise ValueError(f"{self.type} parameters require exactly one of 'link' or 'id'.")
+            required = None
+            media_fields = {"link", "id"}
+        allowed = ({required} if required else media_fields) | {"parameter_name"} | (
+            {"filename"} if self.type == "document" else set()
+        )
         extra = [
-            name for name in ("text", "link", "filename", "payload", "parameter_name")
+            name for name in ("text", "link", "id", "filename", "payload", "parameter_name")
             if getattr(self, name) is not None and name not in allowed
         ]
         if extra:

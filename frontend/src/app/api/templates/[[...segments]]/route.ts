@@ -12,7 +12,7 @@ type RouteContext = { params: Promise<{ segments?: string[] }> };
 const GENERIC_ERROR = "The templates service is temporarily unavailable.";
 
 function friendlyStatus(status: number): number {
-  if ([400, 401, 403, 404, 409, 422, 502, 503].includes(status)) return status;
+  if ([400, 401, 403, 404, 409, 413, 422, 502, 503].includes(status)) return status;
   return 503;
 }
 
@@ -44,15 +44,20 @@ async function handle(request: NextRequest, context: RouteContext, method: Proxy
   const url = backendApiUrl(target.backendPath);
   url.search = target.query.toString();
 
-  // Forward a JSON body for writes that carry one (e.g. create local template).
-  let body: string | undefined;
+  let body: BodyInit | undefined;
   const headers: Record<string, string> = { Accept: "application/json", Authorization: `Bearer ${token}` };
   if (target.method === "POST") {
-    const raw = await request.text();
-    if (raw) {
+    const contentType = request.headers.get("content-type") ?? "";
+    if (contentType.startsWith("multipart/form-data")) {
+      body = Buffer.from(await request.arrayBuffer());
+      headers["Content-Type"] = contentType;
+    } else {
+      const raw = await request.text();
+      if (raw) {
       try { JSON.parse(raw); } catch { return NextResponse.json({ error: "Invalid JSON request." }, { status: 400 }); }
       body = raw;
       headers["Content-Type"] = "application/json";
+      }
     }
   }
 
@@ -82,7 +87,7 @@ async function handle(request: NextRequest, context: RouteContext, method: Proxy
   if (payload === null || typeof payload !== "object") {
     return NextResponse.json({ error: "The templates service returned an invalid response." }, { status: 502 });
   }
-  return NextResponse.json(payload, { status: 200 });
+  return NextResponse.json(payload, { status: upstream.status });
 }
 
 export function GET(request: NextRequest, context: RouteContext) {

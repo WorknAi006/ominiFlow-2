@@ -61,7 +61,14 @@ describe("Inbox proxy allowlist", () => {
     assert.equal(buildInboxProxyTarget("DELETE", ["conversations", conversationId, "messages"], new URLSearchParams()), null);
     assert.equal(buildInboxProxyTarget("POST", ["conversations", conversationId, "assign"], new URLSearchParams(), { assigned_user_id: uuid }).backendPath, `/conversations/${conversationId}/assign`);
     assert.equal(buildInboxProxyTarget("POST", ["conversations", conversationId, "status"], new URLSearchParams(), { status: "closed" }).backendPath, `/conversations/${conversationId}/status`);
-    assert.equal(buildInboxProxyTarget("GET", ["channels", uuid], new URLSearchParams("page=1&page_size=100")).kind, "templates");
+    const templates = buildInboxProxyTarget(
+      "GET",
+      ["channels", uuid, "templates"],
+      new URLSearchParams("page=1&page_size=100"),
+    );
+    assert.equal(templates.kind, "templates");
+    assert.equal(templates.backendPath, `/channels/${uuid}/templates`);
+    assert.equal(buildInboxProxyTarget("GET", ["channels", uuid, "templates"], new URLSearchParams("page=1")), null);
   });
 });
 

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { createTemplate, type AiTemplateDraft } from "@/lib/templates/browser";
+import { createTemplate, submitTemplate, type AiTemplateDraft } from "@/lib/templates/browser";
 import { listChannels, type ChannelConnection } from "@/lib/channels/browser";
 import { AiTemplateModal, AI_TEMPLATE_DRAFT_KEY } from "@/components/templates/ai-template-modal";
 
@@ -39,10 +39,13 @@ export function TemplateEditor() {
   const [bodyText, setBodyText] = useState("");
   const [footerText, setFooterText] = useState("");
   const [buttons, setButtons] = useState<string[]>([]);
+  const [headerFile, setHeaderFile] = useState<File | null>(null);
+  const [bodyExamples, setBodyExamples] = useState<Record<string, string>>({});
 
   const [channels, setChannels] = useState<ChannelConnection[]>([]);
   const [channelId, setChannelId] = useState("");
   const [saving, setSaving] = useState(false);
+  const [submittingMeta, setSubmittingMeta] = useState(false);
   const [error, setError] = useState("");
   const [aiOpen, setAiOpen] = useState(false);
 
@@ -65,15 +68,19 @@ export function TemplateEditor() {
 
   // Pre-fill from an AI-generated draft chosen on the Templates page.
   useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem(AI_TEMPLATE_DRAFT_KEY);
-      if (raw) {
-        applyDraft(JSON.parse(raw) as AiTemplateDraft);
-        sessionStorage.removeItem(AI_TEMPLATE_DRAFT_KEY);
+    let active = true;
+    void (async () => {
+      try {
+        const raw = await Promise.resolve(sessionStorage.getItem(AI_TEMPLATE_DRAFT_KEY));
+        if (raw && active) {
+          applyDraft(JSON.parse(raw) as AiTemplateDraft);
+          sessionStorage.removeItem(AI_TEMPLATE_DRAFT_KEY);
+        }
+      } catch {
+        // ignore malformed/unavailable storage
       }
-    } catch {
-      // ignore malformed/unavailable storage
-    }
+    })();
+    return () => { active = false; };
   }, []);
 
   async function save() {
@@ -88,6 +95,7 @@ export function TemplateEditor() {
         name,
         language: LANGUAGE_MAP[language] ?? "en_US",
         category: CATEGORY_MAP[category] ?? null,
+        header_format: headerType.toUpperCase() as "NONE" | "TEXT" | "IMAGE" | "VIDEO" | "DOCUMENT",
         header_text: headerType === "Text" ? (headerText.trim().slice(0, 60) || null) : null,
         body_text: bodyText,
         footer_text: footerText.trim() || null,
@@ -97,6 +105,44 @@ export function TemplateEditor() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save the template.");
       setSaving(false);
+    }
+  }
+
+  const bodyVariables = [...new Set(Array.from(bodyText.matchAll(/\{\{\s*(\d+)\s*\}\}/g), (match) => `{{${match[1]}}}`))];
+
+  async function submitToMeta() {
+    setError("");
+    if (!channelId) return setError("Select a WhatsApp channel.");
+    if (!/^[a-z0-9_]{1,512}$/.test(name)) return setError("Name must be lowercase letters, numbers and underscores only.");
+    if (!bodyText.trim()) return setError("Body is required.");
+    if (bodyVariables.some((variable) => !bodyExamples[variable]?.trim())) {
+      return setError("Enter one sample value for every body variable before submitting to Meta.");
+    }
+    if (["Image", "Video", "Document"].includes(headerType) && !headerFile) {
+      return setError(`Choose a sample ${headerType.toLowerCase()} for Meta review.`);
+    }
+    if (buttons.filter(Boolean).length > 3) {
+      return setError("Meta allows up to 3 quick-reply buttons for this template.");
+    }
+    setSubmittingMeta(true);
+    try {
+      await submitTemplate({
+        channel_connection_id: channelId,
+        name,
+        language: LANGUAGE_MAP[language] ?? "en_US",
+        category: CATEGORY_MAP[category] ?? "MARKETING",
+        header_format: headerType.toUpperCase() as "NONE" | "TEXT" | "IMAGE" | "VIDEO" | "DOCUMENT",
+        header_text: headerType === "Text" ? headerText.trim() : null,
+        body_text: bodyText.trim(),
+        footer_text: footerText.trim() || null,
+        buttons: buttons.filter(Boolean),
+        body_examples: bodyVariables.map((variable) => bodyExamples[variable].trim()),
+        ...(headerFile ? { header_file: headerFile } : {}),
+      });
+      router.push("/templates");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not submit the template to Meta.");
+      setSubmittingMeta(false);
     }
   }
 
@@ -111,9 +157,14 @@ export function TemplateEditor() {
             </Link>
             <h1 className="text-xl font-bold text-slate-800">Create Template</h1>
           </div>
-          <button onClick={() => void save()} disabled={saving} className="px-5 py-2.5 bg-[#00b050] hover:bg-[#009040] disabled:opacity-60 text-white rounded-lg font-bold text-sm shadow-sm flex items-center gap-2">
-            <SaveIcon className="w-4 h-4" /> {saving ? "Saving…" : "Save Template"}
-          </button>
+          <div className="flex gap-2">
+            <button onClick={() => void save()} disabled={saving || submittingMeta} className="px-5 py-2.5 bg-white hover:bg-slate-50 disabled:opacity-60 text-slate-700 border border-slate-300 rounded-lg font-bold text-sm flex items-center gap-2">
+              <SaveIcon className="w-4 h-4" /> {saving ? "Saving…" : "Save Draft"}
+            </button>
+            <button onClick={() => void submitToMeta()} disabled={saving || submittingMeta} className="px-5 py-2.5 bg-[#00b050] hover:bg-[#009040] disabled:opacity-60 text-white rounded-lg font-bold text-sm shadow-sm">
+              {submittingMeta ? "Submitting…" : "Submit to Meta"}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -246,7 +297,10 @@ export function TemplateEditor() {
                     name="headerType"
                     value={opt}
                     checked={headerType === opt}
-                    onChange={() => setHeaderType(opt)}
+                    onChange={() => {
+                      setHeaderType(opt);
+                      if (!["Image", "Video", "Document"].includes(opt)) setHeaderFile(null);
+                    }}
                     className="w-4 h-4 text-[#00b050] focus:ring-[#00b050]"
                   />
                   <span className="text-sm font-semibold text-slate-700">{opt}</span>
@@ -263,7 +317,20 @@ export function TemplateEditor() {
               />
             )}
             {(headerType === "Image" || headerType === "Video" || headerType === "Document") && (
-              <p className="mt-3 text-xs text-slate-400">A sample {headerType.toLowerCase()} is attached when you submit this template to Meta for approval.</p>
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-slate-700">
+                  Sample {headerType.toLowerCase()} for Meta review
+                  <input
+                    type="file"
+                    accept={headerType === "Image" ? "image/jpeg,image/png,.jpg,.jpeg,.png" : headerType === "Video" ? "video/mp4,.mp4" : "application/pdf,.pdf"}
+                    onChange={(event) => setHeaderFile(event.target.files?.[0] ?? null)}
+                    className="mt-2 block w-full text-sm"
+                  />
+                </label>
+                <p className="mt-2 text-xs text-slate-500">
+                  {headerFile ? `${headerFile.name} · ${(headerFile.size / 1024 / 1024).toFixed(1)} MB` : "Choose JPEG/PNG, MP4, or PDF. WhatsApp limits: image 5 MB, video 16 MB, PDF 100 MB."}
+                </p>
+              </div>
             )}
           </div>
 
@@ -291,6 +358,18 @@ export function TemplateEditor() {
                 <div className="text-xs font-semibold text-slate-400">
                   {bodyText.length}/1024
                 </div>
+                {bodyVariables.map((variable) => (
+                  <label key={variable} className="mt-3 block text-sm text-slate-700">
+                    Meta example for {variable}
+                    <input
+                      value={bodyExamples[variable] ?? ""}
+                      onChange={(event) => setBodyExamples((current) => ({ ...current, [variable]: event.target.value }))}
+                      maxLength={1024}
+                      className="mt-1 w-full px-3 py-2 border border-slate-200 rounded-lg text-sm"
+                      placeholder={`Example value for ${variable}`}
+                    />
+                  </label>
+                ))}
               </div>
               <textarea 
                 className="w-full min-h-[160px] p-4 text-[15px] resize-none outline-none text-slate-800 placeholder:text-slate-400"

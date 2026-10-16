@@ -127,6 +127,13 @@ export function AuthForm({ mode, destination = "/dashboard" }: AuthFormProps) {
           {isRegister ? "Sign in" : "Create an account"}
         </Link>
       </p>
+      {!isRegister && (
+        <p className="text-center text-sm">
+          <Link className="font-semibold text-[#176b59] underline-offset-4 hover:underline" href="/forgot-password">
+            Forgot password?
+          </Link>
+        </p>
+      )}
     </form>
   );
 }

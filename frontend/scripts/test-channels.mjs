@@ -50,12 +50,19 @@ describe("Channel proxy allowlist", () => {
     });
     assert.equal(ok.backendPath, `/channels/${id}/whatsapp/connect`);
     assert.deepEqual(Object.keys(ok.body).sort(), ["access_token", "phone_number_id", "waba_id"]);
+    const embeddedSignup = buildChannelProxyTarget("POST", [id, "whatsapp", "connect"], params(), {
+      phone_number_id: "100000000000001",
+      waba_id: "200000000000001",
+      code: "authorization-code",
+    });
+    assert.deepEqual(Object.keys(embeddedSignup.body).sort(), ["code", "phone_number_id", "waba_id"]);
     assert.equal(buildChannelProxyTarget("POST", [id, "whatsapp", "connect"], params(), { phone_number_id: "abc", waba_id: "200000000000001", access_token: "t" }), null);
     assert.equal(buildChannelProxyTarget("POST", [id, "whatsapp", "connect"], params(), { phone_number_id: "1", waba_id: "2", access_token: "t", code: "x" }), null);
     assert.equal(buildChannelProxyTarget("POST", [id, "whatsapp", "connect"], params(), { phone_number_id: "1", waba_id: "2", access_token: "" }), null);
   });
 
   it("allows test, disconnect, delete, templates and sync on a valid id only", () => {
+    assert.equal(buildChannelProxyTarget("GET", ["whatsapp", "embedded-signup", "config"], params()).backendPath, "/channels/whatsapp/embedded-signup/config");
     assert.equal(buildChannelProxyTarget("POST", [id, "whatsapp", "test"], params()).backendPath, `/channels/${id}/whatsapp/test`);
     assert.equal(buildChannelProxyTarget("POST", [id, "disconnect"], params()).backendPath, `/channels/${id}/disconnect`);
     assert.equal(buildChannelProxyTarget("DELETE", [id], params()).expectsNoContent, true);

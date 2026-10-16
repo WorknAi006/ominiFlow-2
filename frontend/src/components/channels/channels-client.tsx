@@ -13,6 +13,7 @@ import {
   disconnectChannel,
   deleteChannel,
   getMetaOAuthAssets,
+  getWhatsAppEmbeddedSignupConfig,
   listChannels,
   startMetaOAuth,
   syncChannelTemplates,
@@ -28,6 +29,129 @@ import {
   type OAuthAssetItem,
   type TemplateSyncResult,
 } from "@/lib/channels/browser";
+
+type EmbeddedSignupResult = { phone_number_id: string; waba_id: string };
+type FacebookLoginResponse = { authResponse?: { code?: string } };
+
+declare global {
+  interface Window {
+    FB?: {
+      init: (options: { appId: string; autoLogAppEvents: boolean; xfbml: boolean; version: string }) => void;
+      login: (
+        callback: (response: FacebookLoginResponse) => void,
+        options: { config_id: string; response_type: "code"; override_default_response_type: boolean; extras: { setup: Record<string, never> } },
+      ) => void;
+    };
+    fbAsyncInit?: () => void;
+  }
+}
+
+function ensureFacebookSdk(appId: string, version: string): Promise<NonNullable<Window["FB"]>> {
+  if (window.FB) {
+    window.FB.init({ appId, autoLogAppEvents: true, xfbml: true, version });
+    return Promise.resolve(window.FB);
+  }
+
+  return new Promise((resolve, reject) => {
+    const existing = document.getElementById("facebook-jssdk");
+    const timeout = window.setTimeout(() => reject(new Error("Meta sign-in did not load. Try again.")), 15000);
+    window.fbAsyncInit = () => {
+      window.clearTimeout(timeout);
+      if (!window.FB) {
+        reject(new Error("Meta sign-in could not initialize."));
+        return;
+      }
+      window.FB.init({ appId, autoLogAppEvents: true, xfbml: true, version });
+      resolve(window.FB);
+    };
+
+    if (!existing) {
+      const script = document.createElement("script");
+      script.id = "facebook-jssdk";
+      script.src = "https://connect.facebook.net/en_US/sdk.js";
+      script.async = true;
+      script.defer = true;
+      script.crossOrigin = "anonymous";
+      script.onerror = () => {
+        window.clearTimeout(timeout);
+        reject(new Error("Meta sign-in could not load. Check your connection and try again."));
+      };
+      document.head.appendChild(script);
+    }
+  });
+}
+
+function runEmbeddedSignup(configId: string, sdk: NonNullable<Window["FB"]>): Promise<EmbeddedSignupResult & { code: string }> {
+  return new Promise((resolve, reject) => {
+    let code: string | null = null;
+    let assets: EmbeddedSignupResult | null = null;
+    let settled = false;
+    const timeout = window.setTimeout(() => finish(new Error("WhatsApp setup timed out. Start again.")), 180000);
+
+    function finish(error?: Error) {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      window.removeEventListener("message", onMessage);
+      if (error) reject(error);
+      else if (code && assets) resolve({ ...assets, code });
+      else reject(new Error("Meta did not return the WhatsApp account details. Start again."));
+    }
+
+    function maybeFinish() {
+      if (code && assets) finish();
+    }
+
+    function onMessage(event: MessageEvent) {
+      let host = "";
+      try {
+        host = new URL(event.origin).hostname.toLowerCase();
+      } catch {
+        return;
+      }
+      if (host !== "facebook.com" && !host.endsWith(".facebook.com")) return;
+
+      let payload: unknown = event.data;
+      if (typeof payload === "string") {
+        try {
+          payload = JSON.parse(payload);
+        } catch {
+          return;
+        }
+      }
+      if (!payload || typeof payload !== "object") return;
+      const message = payload as { type?: unknown; event?: unknown; data?: unknown };
+      if (message.type !== "WA_EMBEDDED_SIGNUP") return;
+      if (message.event === "CANCEL" || message.event === "ERROR") {
+        finish(new Error(message.event === "CANCEL" ? "WhatsApp setup was cancelled." : "Meta could not complete WhatsApp setup."));
+        return;
+      }
+      if (!message.data || typeof message.data !== "object") return;
+      const data = message.data as { phone_number_id?: unknown; waba_id?: unknown };
+      if (typeof data.phone_number_id === "string" && /^\d{1,32}$/.test(data.phone_number_id) &&
+          typeof data.waba_id === "string" && /^\d{1,32}$/.test(data.waba_id)) {
+        assets = { phone_number_id: data.phone_number_id, waba_id: data.waba_id };
+        maybeFinish();
+      }
+    }
+
+    window.addEventListener("message", onMessage);
+    sdk.login((response) => {
+      const authorizationCode = response.authResponse?.code;
+      if (typeof authorizationCode !== "string" || !authorizationCode) {
+        finish(new Error("Meta sign-in was cancelled or did not return an authorization code."));
+        return;
+      }
+      code = authorizationCode;
+      maybeFinish();
+    }, {
+      config_id: configId,
+      response_type: "code",
+      override_default_response_type: true,
+      extras: { setup: {} },
+    });
+  });
+}
 
 const OAUTH_ERROR_TEXT: Record<string, string> = {
   cancelled: "Meta sign-in was cancelled. No channel was connected.",
@@ -160,6 +284,7 @@ export function ChannelsClient() {
   const [deleting, setDeleting] = useState(false);
 
   const [creatingWebChat, setCreatingWebChat] = useState(false);
+  const [embeddedSignupBusy, setEmbeddedSignupBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -234,6 +359,32 @@ export function ChannelsClient() {
       });
     } else {
       setConnectForm({ ...EMPTY_FORM });
+    }
+  }
+
+  async function beginWhatsAppEmbeddedSignup() {
+    setEmbeddedSignupBusy(true);
+    setNotice(null);
+    try {
+      const config = await getWhatsAppEmbeddedSignupConfig();
+      const sdk = await ensureFacebookSdk(config.app_id, config.graph_api_version);
+      const result = await runEmbeddedSignup(config.config_id, sdk);
+      const created = await createChannel({
+        channel_type: "whatsapp",
+        name: "WhatsApp Business",
+      });
+      await connectWhatsApp(created.id, {
+        phone_number_id: result.phone_number_id,
+        waba_id: result.waba_id,
+        code: result.code,
+      });
+      setNotice({ kind: "success", text: "WhatsApp Business account connected." });
+      await refresh();
+    } catch (error) {
+      handleError(error, error instanceof Error ? error.message : "Could not connect WhatsApp with Meta.");
+      void refresh();
+    } finally {
+      setEmbeddedSignupBusy(false);
     }
   }
 
@@ -615,8 +766,11 @@ export function ChannelsClient() {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button type="button" className="channel-primary-btn" onClick={() => openConnect(null)}>
-            <span aria-hidden="true">+</span> Connect WhatsApp
+          <button type="button" className="channel-primary-btn" disabled={embeddedSignupBusy} onClick={() => void beginWhatsAppEmbeddedSignup()}>
+            <span aria-hidden="true">+</span> {embeddedSignupBusy ? "Connecting…" : "Connect WhatsApp"}
+          </button>
+          <button type="button" className="channel-secondary-btn" onClick={() => openConnect(null)}>
+            Manual setup
           </button>
           <button type="button" className="channel-secondary-btn" disabled={oauthStarting === "facebook"} onClick={() => void beginMetaOAuth("facebook")}>
             <span aria-hidden="true">+</span> {oauthStarting === "facebook" ? "Redirecting…" : "Connect Facebook"}

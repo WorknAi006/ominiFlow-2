@@ -100,14 +100,16 @@ function buildUpdateBody(body: unknown): Record<string, unknown> | null {
 
 function buildConnectBody(body: unknown): Record<string, unknown> | null {
   if (!isRecord(body)) return null;
-  const allowed = new Set(["phone_number_id", "waba_id", "access_token"]);
+  const allowed = new Set(["phone_number_id", "waba_id", "access_token", "code"]);
   for (const key of Object.keys(body)) if (!allowed.has(key)) return null;
 
-  const { phone_number_id, waba_id, access_token } = body;
+  const { phone_number_id, waba_id, access_token, code } = body;
   if (typeof phone_number_id !== "string" || !META_ID_PATTERN.test(phone_number_id)) return null;
   if (typeof waba_id !== "string" || !META_ID_PATTERN.test(waba_id)) return null;
-  if (typeof access_token !== "string" || access_token.length < 1 || access_token.length > 4096) return null;
-  return { phone_number_id, waba_id, access_token };
+  const hasAccessToken = typeof access_token === "string" && access_token.length >= 1 && access_token.length <= 4096;
+  const hasCode = typeof code === "string" && code.length >= 1 && code.length <= 4096;
+  if (hasAccessToken === hasCode) return null;
+  return { phone_number_id, waba_id, ...(hasAccessToken ? { access_token } : { code }) };
 }
 
 function buildFacebookConnectBody(body: unknown): Record<string, unknown> | null {
@@ -199,6 +201,21 @@ export function buildChannelProxyTarget(
       return { backendPath: `/channels/oauth/select`, method: "POST", query: empty, body: select };
     }
     return null;
+  }
+
+  if (
+    id === "whatsapp" &&
+    segments.length === 3 &&
+    segments[1] === "embedded-signup" &&
+    segments[2] === "config" &&
+    method === "GET" &&
+    params.size === 0
+  ) {
+    return {
+      backendPath: "/channels/whatsapp/embedded-signup/config",
+      method: "GET",
+      query: empty,
+    };
   }
 
   if (!UUID_PATTERN.test(id)) return null;

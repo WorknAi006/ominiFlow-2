@@ -26,6 +26,21 @@ class LocalTemplateTests(InboxTestCase):
         listed = self.client.get("/api/v1/templates", headers=self.head()).json()
         self.assertTrue(any(t["name"] == "welcome_offer" for t in listed["items"]))
 
+    def test_create_local_media_header_draft(self):
+        response = self.client.post("/api/v1/templates", headers=self.head(), json={
+            "channel_connection_id": str(self.wa_a.id),
+            "name": "invoice_video",
+            "language": "en_US",
+            "category": "UTILITY",
+            "header_format": "VIDEO",
+            "body_text": "Your update is ready.",
+        })
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertIn(
+            {"type": "HEADER", "format": "VIDEO"},
+            response.json()["components"],
+        )
+
     def test_duplicate_name_language_rejected(self):
         payload = {
             "channel_connection_id": str(self.wa_a.id),

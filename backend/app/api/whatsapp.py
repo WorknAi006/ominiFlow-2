@@ -21,7 +21,11 @@ from app.core.config import settings
 from app.integrations.meta.graph_client import is_meta_configured
 from app.integrations.meta.webhooks import verify_signature, verify_subscription
 from app.schemas.channel import ChannelConnectionResponse
-from app.schemas.whatsapp import WhatsAppConnectionCheck, WhatsAppConnectRequest
+from app.schemas.whatsapp import (
+    WhatsAppConnectionCheck,
+    WhatsAppConnectRequest,
+    WhatsAppEmbeddedSignupConfig,
+)
 from app.services import whatsapp_service
 from app.services.channel_service import (
     ChannelAlreadyExistsError,
@@ -83,6 +87,24 @@ def handle_service_errors() -> Iterator[None]:
 # =========================
 # CONNECT
 # =========================
+
+@router.get(
+    "/channels/whatsapp/embedded-signup/config",
+    response_model=WhatsAppEmbeddedSignupConfig,
+    dependencies=[Depends(require_permission("channel:update"))],
+)
+def whatsapp_embedded_signup_config():
+    if not is_meta_configured() or not settings.meta_embedded_signup_config_id:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="WhatsApp Embedded Signup is not configured.",
+        )
+    return {
+        "app_id": settings.meta_app_id,
+        "config_id": settings.meta_embedded_signup_config_id,
+        "graph_api_version": settings.meta_graph_api_version,
+    }
+
 
 @router.post(
     "/channels/{channel_id}/whatsapp/connect",

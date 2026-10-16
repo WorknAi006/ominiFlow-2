@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 10080
 
     invitation_expire_hours: int = 72
+    password_reset_expire_minutes: int = 60
 
     # Email (SMTP)
     smtp_host: str = ""
@@ -61,6 +62,7 @@ class Settings(BaseSettings):
     meta_graph_api_base_url: str = "https://graph.facebook.com"
     meta_graph_api_version: str = "v23.0"
     meta_http_timeout_seconds: float = 10.0
+    meta_embedded_signup_config_id: str = ""
 
     # Shared secret for the WhatsApp webhook verification (GET) handshake.
     whatsapp_webhook_verify_token: str = ""

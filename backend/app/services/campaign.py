@@ -28,6 +28,27 @@ class CampaignService:
         )
         return self.db.scalar(query) or 0
 
+    def _validate_template(
+        self,
+        tenant_id: uuid.UUID,
+        channel_id: uuid.UUID,
+        template_id: uuid.UUID | None,
+    ) -> None:
+        if template_id is None:
+            return
+        template = self.db.scalar(
+            select(MessageTemplate).where(
+                MessageTemplate.id == template_id,
+                MessageTemplate.tenant_id == tenant_id,
+            )
+        )
+        if template is None:
+            raise ValueError("Message template not found")
+        if template.channel_connection_id != channel_id:
+            raise ValueError("Select a template belonging to the selected WhatsApp channel.")
+        if not template.is_active or template.status != "approved":
+            raise ValueError("Only active, Meta-approved templates can be used in broadcasts.")
+
     def create_campaign(self, tenant_id: uuid.UUID, data: CampaignCreate) -> Campaign:
         # Validate channel connection
         channel = self.db.scalar(
@@ -40,16 +61,7 @@ class CampaignService:
         if not channel:
             raise ValueError("Channel connection not found")
 
-        # Validate template
-        if data.message_template_id:
-            template = self.db.scalar(
-                select(MessageTemplate).where(
-                    MessageTemplate.id == data.message_template_id,
-                    MessageTemplate.tenant_id == tenant_id
-                )
-            )
-            if not template:
-                raise ValueError("Message template not found")
+        self._validate_template(tenant_id, channel.id, data.message_template_id)
 
         # Calculate recipients
         audience_count = 0
@@ -91,6 +103,12 @@ class CampaignService:
             return None
 
         update_data = data.model_dump(exclude_unset=True)
+        if "channel_connection_id" in update_data or "message_template_id" in update_data:
+            self._validate_template(
+                tenant_id,
+                update_data.get("channel_connection_id", campaign.channel_connection_id),
+                update_data.get("message_template_id", campaign.message_template_id),
+            )
         
         # If audience changed, update count
         if "audience_config" in update_data:
@@ -122,6 +140,10 @@ class CampaignService:
         
         if campaign.status != CampaignStatus.DRAFT:
             raise ValueError(f"Cannot start a campaign in {campaign.status} status")
+
+        self._validate_template(
+            tenant_id, campaign.channel_connection_id, campaign.message_template_id,
+        )
 
         # Resolve audience and populate recipients
         tags = (campaign.audience_config or {}).get("tags", [])
@@ -156,4 +178,3 @@ class CampaignService:
         self.db.commit()
         
         return campaign
-

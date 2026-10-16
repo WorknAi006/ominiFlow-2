@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import { InboxApiError, assignInboxConversation, changeInboxConversationStatus, getInboxChannelAvailability, getInboxContactDetails, getInboxConversation, getInboxFilterOptions, getInboxTemplates, inboxMediaUrl, listInboxConversations, listInboxMessages, markInboxConversationRead, sendInboxTextMessage, sendInboxTemplateMessage, type InboxChannelOption, type InboxContactDetails, type InboxTemplateOption, type InboxUserOption } from "@/lib/api/inbox";
+import { uploadTemplateMedia } from "@/lib/templates/browser";
 import type { Conversation, ConversationListParams, ConversationStatus } from "@/lib/api/conversations";
 import { MAX_TEXT_LENGTH, type Message } from "@/lib/api/messages";
 import { canSendWhatsAppReply, INBOX_STATUSES } from "@/lib/inbox/proxy-utils";
@@ -66,7 +67,7 @@ function contactLine(conversation: Conversation) {
 
 function supportsInboxTemplate(template: InboxTemplateOption) {
   const header = template.components.find((component) => String(component.type).toUpperCase() === "HEADER");
-  if (header && (String(header.format).toUpperCase() !== "TEXT" || typeof header.text === "string" && /{{/.test(header.text))) return false;
+  if (header && !["TEXT", "IMAGE", "VIDEO", "DOCUMENT"].includes(String(header.format).toUpperCase())) return false;
   const buttons = template.components.find((component) => String(component.type).toUpperCase() === "BUTTONS");
   return !Array.isArray(buttons?.buttons) || buttons.buttons.every((button) =>
     !button || typeof button !== "object" || String((button as Record<string, unknown>).type).toUpperCase() !== "URL" ||
@@ -107,9 +108,12 @@ export function InboxClient({ initialConversationId }: InboxClientProps) {
   const [liveMessage, setLiveMessage] = useState("");
   const [mobileThread, setMobileThread] = useState(Boolean(initialConversationId));
   const [templates, setTemplates] = useState<InboxTemplateOption[]>([]);
+  const [templateChannelId, setTemplateChannelId] = useState("");
   const [templateOpen, setTemplateOpen] = useState(false);
   const [templateId, setTemplateId] = useState("");
   const [templateValues, setTemplateValues] = useState<string[]>([]);
+  const [templateHeaderValues, setTemplateHeaderValues] = useState<string[]>([]);
+  const [templateMediaFile, setTemplateMediaFile] = useState<File | null>(null);
   const [templateBusy, setTemplateBusy] = useState(false);
 
   const selectedIdRef = useRef(selectedId);
@@ -426,10 +430,17 @@ export function InboxClient({ initialConversationId }: InboxClientProps) {
   async function openTemplatePicker() {
     if (!selectedConversation) return;
     setTemplateOpen((open) => !open);
-    if (templates.length) return;
+    const channelId = selectedConversation.channel.id;
+    if (templateChannelId === channelId && templates.length) return;
+    setTemplates([]);
+    setTemplateId("");
+    setTemplateValues([]);
+    setTemplateHeaderValues([]);
+    setTemplateMediaFile(null);
     try {
-      const result = await getInboxTemplates(selectedConversation.channel.id);
+      const result = await getInboxTemplates(channelId);
       setTemplates(result.items);
+      setTemplateChannelId(channelId);
     } catch (error) {
       setSendError(error instanceof Error ? error.message : "Could not load approved templates.");
     }
@@ -437,28 +448,59 @@ export function InboxClient({ initialConversationId }: InboxClientProps) {
 
   const selectedTemplate = templates.find((template) => template.id === templateId) ?? null;
   const templateBody = selectedTemplate?.components.find((component) => String(component.type).toUpperCase() === "BODY");
+  const templateHeader = selectedTemplate?.components.find((component) => String(component.type).toUpperCase() === "HEADER");
   const templateBodyText = typeof templateBody?.text === "string" ? templateBody.text : "";
+  const templateHeaderFormat = String(templateHeader?.format ?? "").toUpperCase();
+  const templateHeaderText = typeof templateHeader?.text === "string" ? templateHeader.text : "";
+  const templateHeaderVariables = [...new Set(templateHeaderText.match(/{{\s*[a-z_][a-z0-9_]*\s*}}|{{\s*\d+\s*}}/gi) ?? [])];
   const templateVariables = [...new Set(templateBodyText.match(/{{\s*[a-z_][a-z0-9_]*\s*}}|{{\s*\d+\s*}}/gi) ?? [])];
 
   async function sendTemplate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selectedId || !selectedTemplate || templateBusy || canReplyReason) return;
+    if (!selectedId || !selectedConversation || !selectedTemplate || templateBusy || canReplyReason) return;
     setTemplateBusy(true);
     setSendError("");
     try {
-      const bodyComponents = templateVariables.length ? [{
-        type: "body",
-        parameters: templateVariables.map((variable, index) => ({
+      const components: Record<string, unknown>[] = [];
+      if (templateHeaderFormat === "TEXT" && templateHeaderVariables.length) {
+        components.push({
+          type: "header",
+          parameters: templateHeaderVariables.map((variable, index) => ({
+            type: "text", text: templateHeaderValues[index] ?? "",
+            ...( /^[{\s]*[a-z_]/i.test(variable) ? { parameter_name: variable.replace(/[{}\s]/g, "") } : {}),
+          })),
+        });
+      } else if (["IMAGE", "VIDEO", "DOCUMENT"].includes(templateHeaderFormat)) {
+        if (!templateMediaFile) throw new Error(`Choose a ${templateHeaderFormat.toLowerCase()} header file.`);
+        const media = await uploadTemplateMedia(
+          selectedConversation.channel.id,
+          templateHeaderFormat.toLowerCase() as "image" | "video" | "document",
+          templateMediaFile,
+        );
+        components.push({
+          type: "header",
+          parameters: [{
+            type: templateHeaderFormat.toLowerCase(),
+            id: media.id,
+            ...(templateHeaderFormat === "DOCUMENT" ? { filename: media.filename } : {}),
+          }],
+        });
+      }
+      if (templateVariables.length) {
+        components.push({
+          type: "body",
+          parameters: templateVariables.map((variable, index) => ({
           type: "text", text: templateValues[index] ?? "",
           ...( /^[{\s]*[a-z_]/i.test(variable) ? { parameter_name: variable.replace(/[{}\s]/g, "") } : {}),
-        })),
-      }] : [];
+          })),
+        });
+      }
       const result = await sendInboxTemplateMessage(selectedId, {
         type: "template", template_name: selectedTemplate.name,
-        language: selectedTemplate.language, components: bodyComponents,
+        language: selectedTemplate.language, components,
       });
       setMessages((current) => mergeMessages(current, [result]));
-      setTemplateOpen(false); setTemplateId(""); setTemplateValues([]);
+      setTemplateOpen(false); setTemplateId(""); setTemplateValues([]); setTemplateHeaderValues([]); setTemplateMediaFile(null);
       void loadConversations(false);
     } catch (error) {
       setSendError(error instanceof Error ? error.message : "Template could not be sent.");
@@ -703,11 +745,21 @@ export function InboxClient({ initialConversationId }: InboxClientProps) {
                     <button type="button" className="text-action" onClick={() => setTemplateOpen(false)}>Close</button>
                   </div>
                   <label className="mt-3 block text-xs text-slate-600">Approved WhatsApp template
-                    <select className="mt-1 block w-full" value={templateId} onChange={(event) => { setTemplateId(event.target.value); setTemplateValues([]); }}>
+                    <select className="mt-1 block w-full" value={templateId} onChange={(event) => { setTemplateId(event.target.value); setTemplateValues([]); setTemplateHeaderValues([]); setTemplateMediaFile(null); }}>
                       <option value="">Choose a template</option>
                       {templates.filter(supportsInboxTemplate).map((template) => <option key={template.id} value={template.id}>{template.name} · {template.language}</option>)}
                     </select>
                   </label>
+                  {selectedTemplate && templateHeaderVariables.map((variable, index) => <label key={`header-${variable}-${index}`} className="mt-2 block text-xs text-slate-600">Header value for {variable}
+                    <input className="mt-1 block w-full" required maxLength={60} value={templateHeaderValues[index] ?? ""}
+                      onChange={(event) => setTemplateHeaderValues((current) => { const next = [...current]; next[index] = event.target.value; return next; })} />
+                  </label>)}
+                  {selectedTemplate && ["IMAGE", "VIDEO", "DOCUMENT"].includes(templateHeaderFormat) && <label className="mt-2 block text-xs text-slate-600">
+                    {templateHeaderFormat.toLowerCase()} header file
+                    <input className="mt-1 block w-full" type="file" required
+                      accept={templateHeaderFormat === "IMAGE" ? "image/jpeg,image/png,.jpg,.jpeg,.png" : templateHeaderFormat === "VIDEO" ? "video/mp4,.mp4" : "application/pdf,.pdf"}
+                      onChange={(event) => setTemplateMediaFile(event.target.files?.[0] ?? null)} />
+                  </label>}
                   {selectedTemplate && templateVariables.map((variable, index) => <label key={`${variable}-${index}`} className="mt-2 block text-xs text-slate-600">Value for {variable}
                     <input className="mt-1 block w-full" required maxLength={1024} value={templateValues[index] ?? ""}
                       onChange={(event) => setTemplateValues((current) => { const next = [...current]; next[index] = event.target.value; return next; })} />

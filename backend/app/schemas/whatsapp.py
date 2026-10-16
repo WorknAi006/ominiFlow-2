@@ -43,3 +43,9 @@ class WhatsAppConnectionCheck(BaseModel):
     last_event_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class WhatsAppEmbeddedSignupConfig(BaseModel):
+    app_id: str = Field(pattern=META_ID_PATTERN)
+    config_id: str = Field(min_length=1, max_length=100)
+    graph_api_version: str = Field(pattern=r"^v[0-9]{1,3}\.[0-9]{1,2}$")

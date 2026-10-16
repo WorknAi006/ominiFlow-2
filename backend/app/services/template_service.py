@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.integrations.base import (
     ProviderCredentials,
+    ProviderError,
     ProviderNotConfiguredError,
     ProviderRequestError,
     ProviderUnavailableError,
@@ -30,6 +31,7 @@ from app.models import (
     MessageTemplate,
 )
 from app.schemas.template import (
+    LocalTemplateSubmission,
     TemplateComponentInput,
     TemplateListResponse,
     TemplateResponse,
@@ -86,6 +88,14 @@ class TemplateNotUsableError(TemplateServiceError):
 
 class TemplateAlreadyExistsError(TemplateServiceError):
     """A template with this name + language already exists on the channel."""
+
+
+class TemplateSubmissionFailedError(TemplateServiceError):
+    pass
+
+
+class TemplateMediaUploadError(TemplateServiceError):
+    pass
 
 
 class TemplateParameterError(TemplateServiceError):
@@ -251,7 +261,12 @@ def create_local_template(db: Session, tenant_id: uuid.UUID, data) -> TemplateRe
     channel = _get_channel(db, tenant_id, data.channel_connection_id)
 
     components: list[dict[str, Any]] = []
-    if data.header_text:
+    header_format = data.header_format
+    if header_format == "NONE" and data.header_text:
+        header_format = "TEXT"
+    if header_format in ("IMAGE", "VIDEO", "DOCUMENT"):
+        components.append({"type": "HEADER", "format": header_format})
+    elif header_format == "TEXT" and data.header_text:
         components.append({"type": "HEADER", "format": "TEXT", "text": data.header_text})
     components.append({"type": "BODY", "text": data.body_text})
     if data.footer_text:
@@ -278,6 +293,193 @@ def create_local_template(db: Session, tenant_id: uuid.UUID, data) -> TemplateRe
         raise TemplateAlreadyExistsError("A template with this name and language already exists on this channel.")
     db.refresh(template)
     return to_template_response(template)
+
+
+def submit_local_template(
+    db: Session,
+    tenant_id: uuid.UUID,
+    data: LocalTemplateSubmission,
+    sample_file: tuple[bytes, str, str] | None,
+) -> TemplateResponse:
+    channel = _get_channel(db, tenant_id, data.channel_connection_id)
+    if channel.channel_type != ChannelType.WHATSAPP:
+        raise UnsupportedTemplateChannelError("Templates are only available for WhatsApp channels.")
+    if (
+        channel.status != ChannelStatus.CONNECTED
+        or not channel.external_account_id
+        or not channel.external_business_id
+        or not channel.access_token_encrypted
+    ):
+        raise TemplateChannelNotConnectedError("The WhatsApp channel is not connected.")
+
+    media_format = data.header_format in MEDIA_HEADER_FORMATS
+    if media_format != (sample_file is not None):
+        raise TemplateSubmissionFailedError(
+            "Choose a matching sample file for an image, video or document header."
+        )
+
+    existing = db.scalar(
+        select(MessageTemplate).where(
+            MessageTemplate.tenant_id == tenant_id,
+            MessageTemplate.channel_connection_id == channel.id,
+            MessageTemplate.name == data.name,
+            MessageTemplate.language == data.language,
+        )
+    )
+    if existing is not None and existing.status != "draft":
+        raise TemplateAlreadyExistsError(
+            f"This template already exists on this WhatsApp account (status: {existing.status})."
+        )
+
+    try:
+        token = get_credential_service().decrypt(channel.access_token_encrypted)
+    except CredentialEncryptionError:
+        raise TemplateCredentialsError(
+            "WhatsApp credentials are unavailable. Reconnect this channel."
+        ) from None
+
+    provider = get_provider(ChannelType.WHATSAPP)
+    if not isinstance(provider, WhatsAppProvider) or not provider.is_configured():
+        del token
+        raise TemplateNotConfiguredError("WhatsApp integration is not configured.")
+
+    components: list[dict[str, Any]] = []
+    if data.header_format == "TEXT":
+        components.append({"type": "HEADER", "format": "TEXT", "text": data.header_text})
+    elif media_format:
+        components.append({"type": "HEADER", "format": data.header_format})
+    body: dict[str, Any] = {"type": "BODY", "text": data.body_text}
+    if data.body_examples:
+        body["example"] = {"body_text": [data.body_examples]}
+    components.append(body)
+    if data.footer_text:
+        components.append({"type": "FOOTER", "text": data.footer_text})
+    if data.buttons:
+        components.append({
+            "type": "BUTTONS",
+            "buttons": [{"type": "QUICK_REPLY", "text": label} for label in data.buttons],
+        })
+
+    existing_components = components
+    if existing is None:
+        existing = MessageTemplate(
+            tenant_id=tenant_id,
+            channel_connection_id=channel.id,
+            name=data.name,
+            language=data.language,
+            category=data.category.lower(),
+            status="submitting",
+            components=existing_components,
+            template_metadata={"parameter_format": "POSITIONAL"},
+            is_active=True,
+        )
+        db.add(existing)
+    else:
+        existing.category = data.category.lower()
+        existing.status = "submitting"
+        existing.components = existing_components
+        existing.template_metadata = {"parameter_format": "POSITIONAL"}
+        existing.is_active = True
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        del token
+        raise TemplateAlreadyExistsError(
+            "A template with this name and language already exists on this channel."
+        ) from None
+
+    payload_components = [dict(component) for component in components]
+    try:
+        if sample_file is not None:
+            sample_bytes, content_type, _filename = sample_file
+            handle = provider.upload_template_sample(
+                ProviderCredentials(access_token=token), sample_bytes, content_type,
+            )
+            header = next(item for item in payload_components if item["type"] == "HEADER")
+            header["example"] = {"header_handle": [handle]}
+        result = provider.create_template(
+            ProviderCredentials(access_token=token),
+            channel.external_business_id,
+            {
+                "name": data.name,
+                "language": data.language,
+                "category": data.category,
+                "components": payload_components,
+            },
+        )
+    except ProviderUnavailableError:
+        raise TemplateSubmissionFailedError(
+            "Could not confirm Meta's response. Sync templates before trying again."
+        ) from None
+    except (ProviderRequestError, ProviderError) as exc:
+        existing.status = "draft"
+        db.commit()
+        raise TemplateSubmissionFailedError(f"Meta could not accept the template: {exc}") from None
+    finally:
+        del token
+
+    external_id = result.get("id")
+    if not isinstance(external_id, str) or not external_id:
+        raise TemplateSubmissionFailedError(
+            "Meta returned an unexpected response. Sync templates before trying again."
+        )
+    status_value = result.get("status")
+    existing.external_template_id = external_id[:64]
+    existing.status = status_value.lower() if isinstance(status_value, str) else "pending"
+    existing.components = components
+    existing.last_synced_at = _utcnow()
+    db.commit()
+    db.refresh(existing)
+    return to_template_response(existing)
+
+
+def upload_template_media(
+    db: Session,
+    tenant_id: uuid.UUID,
+    channel_id: uuid.UUID,
+    media_type: str,
+    data: bytes,
+    content_type: str,
+    filename: str,
+) -> dict[str, str]:
+    channel = _get_channel(db, tenant_id, channel_id)
+    if channel.channel_type != ChannelType.WHATSAPP:
+        raise UnsupportedTemplateChannelError("Media headers are only available for WhatsApp channels.")
+    if (
+        channel.status != ChannelStatus.CONNECTED
+        or not channel.external_account_id
+        or not channel.access_token_encrypted
+    ):
+        raise TemplateChannelNotConnectedError("The WhatsApp channel is not connected.")
+    try:
+        token = get_credential_service().decrypt(channel.access_token_encrypted)
+    except CredentialEncryptionError:
+        raise TemplateCredentialsError(
+            "WhatsApp credentials are unavailable. Reconnect this channel."
+        ) from None
+
+    provider = get_provider(ChannelType.WHATSAPP)
+    if not isinstance(provider, WhatsAppProvider) or not provider.is_configured():
+        del token
+        raise TemplateNotConfiguredError("WhatsApp integration is not configured.")
+    try:
+        media_id = provider.upload_media(
+            ProviderCredentials(access_token=token),
+            channel.external_account_id,
+            data,
+            content_type,
+            filename,
+        )
+    except ProviderUnavailableError:
+        raise TemplateMediaUploadError("Could not reach WhatsApp. Please try again.") from None
+    except ProviderRequestError as exc:
+        raise TemplateMediaUploadError(f"WhatsApp rejected the media file: {exc}") from None
+    except ProviderError as exc:
+        raise TemplateMediaUploadError(f"WhatsApp could not accept the media file: {exc}") from None
+    finally:
+        del token
+    return {"id": media_id, "type": media_type, "filename": filename}
 
 
 # =========================
@@ -560,16 +762,32 @@ def build_send_components(
         if len(params) != len(expected) or any(p.type != "text" for p in params):
             raise TemplateParameterError(f"Header requires {len(expected)} text parameter(s).")
         if params:
-            result.append({"type": "header", "parameters": [
-                {"type": "text", "text": _check_text(p.text, "Header parameter", HEADER_TEXT_LIMIT)}
-                for p in params
-            ]})
+            rendered_header_params: list[dict[str, str]] = []
+            for position, param in enumerate(params):
+                rendered: dict[str, str] = {
+                    "type": "text",
+                    "text": _check_text(param.text, "Header parameter", HEADER_TEXT_LIMIT),
+                }
+                if named:
+                    if param.parameter_name != expected[position]:
+                        raise TemplateParameterError(
+                            f"Header parameter must be '{expected[position]}'."
+                        )
+                    rendered["parameter_name"] = param.parameter_name
+                elif param.parameter_name is not None:
+                    raise TemplateParameterError("This template uses positional parameters.")
+                rendered_header_params.append(rendered)
+            result.append({"type": "header", "parameters": rendered_header_params})
     elif header_format in MEDIA_HEADER_FORMATS:
         media_type = MEDIA_HEADER_FORMATS[header_format]
         params = header_input.parameters if header_input else []
         if len(params) != 1 or params[0].type != media_type:
             raise TemplateParameterError(f"Header requires one {media_type} parameter.")
-        media: dict[str, Any] = {"link": params[0].link}
+        media: dict[str, Any] = {}
+        if params[0].id:
+            media["id"] = params[0].id
+        else:
+            media["link"] = params[0].link
         if media_type == "document" and params[0].filename:
             media["filename"] = params[0].filename
         result.append({"type": "header", "parameters": [{"type": media_type, media_type: media}]})

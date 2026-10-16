@@ -33,23 +33,31 @@ export function AppShell({ user, tenant, children }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [logoutError, setLogoutError] = useState("");
   const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ");
   const initials = [user.first_name[0], user.last_name?.[0]].filter(Boolean).join("").toUpperCase();
 
   async function logout() {
-    setLogoutError("");
+    const goToLogin = (partial: boolean) => {
+      router.replace(partial ? "/login?reason=logout-partial" : "/login");
+      router.refresh();
+    };
     try {
       const response = await fetch("/api/auth/logout", { method: "POST" });
+      const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) {
-        setLogoutError("Could not end this session. Please try again.");
+        goToLogin(true);
+        return;
+      }
+      if (payload && typeof payload === "object" && "server_session_revoked" in payload &&
+          payload.server_session_revoked === false) {
+        goToLogin(true);
         return;
       }
     } catch {
-      setLogoutError("Could not reach the service. Please try signing out again.");
+      goToLogin(true);
       return;
     }
-    window.location.href = "/login";
+    goToLogin(false);
   }
 
   return (
@@ -63,7 +71,9 @@ export function AppShell({ user, tenant, children }: AppShellProps) {
 
         <nav aria-label="Main navigation" className="sidebar-nav mt-8 space-y-1">
           <p className="nav-section-label">WORKSPACE</p>
-          {navigation.map((item) => {
+          {[...navigation, ...(user.is_platform_super_admin
+            ? [{ label: "Password reset requests", href: "/platform-admin/password-resets", mark: "🔐" }]
+            : [])].map((item) => {
             const active = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));
             return (
               <Link
@@ -87,7 +97,6 @@ export function AppShell({ user, tenant, children }: AppShellProps) {
               <span className="block truncate text-sm font-semibold text-white">{fullName || "Team member"}</span>
             </span>
           </div>
-          {logoutError && <p role="alert" className="mt-1 text-xs leading-4 text-rose-200">{logoutError}</p>}
           <button className="logout-button !mt-1 !py-1.5 !text-[13px]" type="button" onClick={logout}>Sign out</button>
         </div>
       </aside>

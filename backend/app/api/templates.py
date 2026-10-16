@@ -1,18 +1,38 @@
 import uuid
+import json
+import re
+from pathlib import PurePath
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from pydantic import ValidationError
 
-from app.api.dependencies import CurrentTenant, DbSession, require_permission
+from app.api.dependencies import (
+    CurrentTenant,
+    CurrentUser,
+    DbSession,
+    require_permission,
+    require_platform_super_admin,
+)
 from app.api.errors import service_errors
 from app.schemas.template import (
     AiTemplateGenerateRequest,
     AiTemplateGenerateResponse,
     LocalTemplateCreate,
+    LocalTemplateSubmission,
     TemplateListResponse,
     TemplateResponse,
     TemplateSyncResponse,
 )
+from app.schemas.platform_template import (
+    PlatformTemplateAdminStatus,
+    PlatformTemplateCreate,
+    PlatformTemplateListResponse,
+    PlatformTemplateResponse,
+    PlatformTemplateSubmitRequest,
+    PlatformTemplateSubmitResponse,
+)
 from app.services import ai_template_service, payment_service, template_service
+from app.services import platform_template_service
 from app.services.template_service import (
     ChannelNotFoundError,
     TemplateAlreadyExistsError,
@@ -20,11 +40,235 @@ from app.services.template_service import (
     TemplateCredentialsError,
     TemplateNotConfiguredError,
     TemplateNotFoundError,
+    TemplateSubmissionFailedError,
+    TemplateMediaUploadError,
     TemplateSyncFailedError,
     UnsupportedTemplateChannelError,
 )
+from app.services.platform_template_service import (
+    PlatformTemplateAccessError,
+    PlatformTemplateConflictError,
+    PlatformTemplateNotFoundError,
+    PlatformTemplateProviderError,
+)
 
 router = APIRouter(tags=["Templates"])
+
+MEDIA_RULES = {
+    "IMAGE": ({"image/jpeg": {".jpg", ".jpeg"}, "image/png": {".png"}}, 5 * 1024 * 1024),
+    "VIDEO": ({"video/mp4": {".mp4"}}, 16 * 1024 * 1024),
+    "DOCUMENT": ({"application/pdf": {".pdf"}}, 100 * 1024 * 1024),
+}
+SAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]")
+
+
+async def read_template_media(file: UploadFile, media_type: str) -> tuple[bytes, str, str]:
+    rules = MEDIA_RULES[media_type]
+    filename = PurePath(file.filename or "upload").name
+    content_type = (file.content_type or "").lower()
+    extension = PurePath(filename).suffix.lower()
+    valid_extensions = rules[0].get(content_type)
+    if valid_extensions is None or extension not in valid_extensions:
+        raise HTTPException(status_code=422, detail=f"Choose a valid {media_type.lower()} file.")
+    data = await file.read(rules[1] + 1)
+    if not data:
+        raise HTTPException(status_code=422, detail="The selected media file is empty.")
+    if len(data) > rules[1]:
+        raise HTTPException(status_code=413, detail=f"The {media_type.lower()} file is too large.")
+    valid_signature = (
+        (media_type == "IMAGE" and (
+            content_type == "image/jpeg" and data.startswith(b"\xff\xd8\xff")
+            or content_type == "image/png" and data.startswith(b"\x89PNG\r\n\x1a\n")
+        ))
+        or (media_type == "VIDEO" and len(data) >= 12 and data[4:8] == b"ftyp")
+        or (media_type == "DOCUMENT" and data.startswith(b"%PDF-"))
+    )
+    if not valid_signature:
+        raise HTTPException(status_code=422, detail=f"The selected file is not a valid {media_type.lower()}.")
+    safe_name = SAFE_FILENAME_CHARS.sub("_", filename)[:255] or "upload"
+    return data, content_type, safe_name
+
+
+@router.post(
+    "/templates/submit",
+    response_model=TemplateResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission("template:sync"))],
+)
+async def submit_local_template(
+    tenant: CurrentTenant,
+    db: DbSession,
+    name: str = Form(...),
+    channel_connection_id: uuid.UUID = Form(...),
+    language: str = Form(...),
+    category: str = Form(...),
+    header_format: str = Form("NONE"),
+    header_text: str | None = Form(None),
+    body_text: str = Form(...),
+    footer_text: str | None = Form(None),
+    buttons_json: str = Form("[]"),
+    body_examples_json: str = Form("[]"),
+    header_file: UploadFile | None = File(None),
+):
+    try:
+        buttons = json.loads(buttons_json)
+        body_examples = json.loads(body_examples_json)
+        if not isinstance(buttons, list) or not isinstance(body_examples, list):
+            raise ValueError
+        definition = LocalTemplateSubmission(
+            name=name,
+            channel_connection_id=channel_connection_id,
+            language=language,
+            category=category,
+            header_format=header_format,
+            header_text=header_text,
+            body_text=body_text,
+            footer_text=footer_text,
+            buttons=buttons,
+            body_examples=body_examples,
+        )
+    except (ValueError, ValidationError) as exc:
+        detail = exc.errors() if isinstance(exc, ValidationError) else "Template examples are invalid."
+        raise HTTPException(status_code=422, detail=detail) from None
+
+    sample = None
+    if definition.header_format in MEDIA_RULES:
+        if header_file is None:
+            raise HTTPException(status_code=422, detail="Choose a sample file for the media header.")
+        sample = await read_template_media(header_file, definition.header_format)
+    elif header_file is not None:
+        raise HTTPException(status_code=422, detail="A sample file is only used for media headers.")
+
+    try:
+        return template_service.submit_local_template(db, tenant.id, definition, sample)
+    except tuple(ERRORS) as exc:
+        raise HTTPException(status_code=ERRORS[type(exc)], detail=str(exc)) from None
+    except TemplateSubmissionFailedError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+
+
+@router.post(
+    "/templates/channels/{channel_id}/media-upload",
+    dependencies=[Depends(require_permission("message:create"))],
+)
+async def upload_template_send_media(
+    channel_id: uuid.UUID,
+    tenant: CurrentTenant,
+    db: DbSession,
+    media_type: str = Form(...),
+    file: UploadFile = File(...),
+):
+    if media_type.upper() not in MEDIA_RULES:
+        raise HTTPException(status_code=422, detail="Media type must be image, video or document.")
+    media = await read_template_media(file, media_type.upper())
+    try:
+        return template_service.upload_template_media(
+            db, tenant.id, channel_id, media_type.lower(), *media,
+        )
+    except tuple(ERRORS) as exc:
+        raise HTTPException(status_code=ERRORS[type(exc)], detail=str(exc)) from None
+    except TemplateMediaUploadError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+
+PLATFORM_TEMPLATE_ERRORS = {
+    PlatformTemplateNotFoundError: status.HTTP_404_NOT_FOUND,
+    PlatformTemplateConflictError: status.HTTP_409_CONFLICT,
+    PlatformTemplateAccessError: status.HTTP_422_UNPROCESSABLE_CONTENT,
+    PlatformTemplateProviderError: status.HTTP_502_BAD_GATEWAY,
+}
+
+
+@router.get(
+    "/platform-template-library/admin-status",
+    response_model=PlatformTemplateAdminStatus,
+)
+def platform_template_admin_status(user: CurrentUser):
+    return {"is_platform_super_admin": user.is_platform_super_admin}
+
+
+@router.get(
+    "/platform-template-library",
+    response_model=PlatformTemplateListResponse,
+    dependencies=[Depends(require_permission("template:read"))],
+)
+def list_platform_template_library(
+    tenant: CurrentTenant,
+    user: CurrentUser,
+    db: DbSession,
+):
+    return platform_template_service.list_library(
+        db, include_inactive=user.is_platform_super_admin,
+    )
+
+
+@router.post(
+    "/platform-template-library",
+    response_model=PlatformTemplateResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_platform_super_admin)],
+)
+def create_platform_template(
+    data: PlatformTemplateCreate,
+    user: CurrentUser,
+    db: DbSession,
+):
+    try:
+        return platform_template_service.create_library_template(db, user, data)
+    except PlatformTemplateConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@router.post(
+    "/platform-template-library/{template_id}/deactivate",
+    response_model=PlatformTemplateResponse,
+    dependencies=[Depends(require_platform_super_admin)],
+)
+def deactivate_platform_template(
+    template_id: uuid.UUID,
+    db: DbSession,
+):
+    try:
+        return platform_template_service.set_library_template_active(db, template_id, False)
+    except PlatformTemplateNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
+
+@router.post(
+    "/platform-template-library/{template_id}/activate",
+    response_model=PlatformTemplateResponse,
+    dependencies=[Depends(require_platform_super_admin)],
+)
+def activate_platform_template(
+    template_id: uuid.UUID,
+    db: DbSession,
+):
+    try:
+        return platform_template_service.set_library_template_active(db, template_id, True)
+    except PlatformTemplateNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
+
+@router.post(
+    "/platform-template-library/{template_id}/submit",
+    response_model=PlatformTemplateSubmitResponse,
+    dependencies=[Depends(require_permission("template:sync"))],
+)
+def submit_platform_template(
+    template_id: uuid.UUID,
+    data: PlatformTemplateSubmitRequest,
+    tenant: CurrentTenant,
+    db: DbSession,
+):
+    try:
+        return platform_template_service.submit_for_tenant(
+            db, tenant.id, template_id, data,
+        )
+    except tuple(PLATFORM_TEMPLATE_ERRORS) as exc:
+        raise HTTPException(
+            status_code=PLATFORM_TEMPLATE_ERRORS[type(exc)],
+            detail=str(exc),
+        ) from None
+
 
 ERRORS = {
     ChannelNotFoundError: status.HTTP_404_NOT_FOUND,

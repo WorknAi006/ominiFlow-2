@@ -1,12 +1,27 @@
+import hashlib
+import logging
 import re
+import secrets
+import smtplib
+import uuid
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.security import hash_password, verify_password
-from app.models import Role, Tenant, TenantMembership, User
-from app.schemas.auth import LoginRequest, RegisterRequest
+from app.models import PasswordResetRequest, Role, Tenant, TenantMembership, User, UserSession
+from app.schemas.auth import (
+    LoginRequest,
+    PasswordResetCompleteRequest,
+    PasswordResetRequestCreate,
+    RegisterRequest,
+)
+
+logger = logging.getLogger(__name__)
 
 
 # Used to run a password verification when the user does not exist,
@@ -36,6 +51,18 @@ class InvalidCredentialsError(AuthServiceError):
 
 class NoActiveTenantError(AuthServiceError):
     """Raised when the user has no active tenant membership."""
+
+
+class PasswordResetRequestNotFoundError(AuthServiceError):
+    """Raised when a reset request is unavailable for review."""
+
+
+class PasswordResetTokenInvalidError(AuthServiceError):
+    """Raised when a password reset token is invalid or expired."""
+
+
+class PasswordResetEmailError(AuthServiceError):
+    """Raised when SMTP is not configured or reset email delivery fails."""
 
 
 def generate_slug(name: str) -> str:
@@ -199,3 +226,168 @@ def authenticate_user(
         )
 
     return user, tenant
+
+
+def create_password_reset_request(
+    db: Session,
+    data: PasswordResetRequestCreate,
+) -> None:
+    email = str(data.email).strip().lower()
+    user = db.scalar(
+        select(User).where(User.email == email, User.is_active.is_(True))
+    )
+    if user is None:
+        return
+
+    pending = db.scalar(
+        select(PasswordResetRequest.id).where(
+            PasswordResetRequest.user_id == user.id,
+            PasswordResetRequest.status == "pending",
+        )
+    )
+    if pending is not None:
+        return
+
+    db.add(PasswordResetRequest(user_id=user.id, email=email))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+
+
+def list_pending_password_reset_requests(
+    db: Session,
+) -> list[PasswordResetRequest]:
+    return list(
+        db.scalars(
+            select(PasswordResetRequest)
+            .where(PasswordResetRequest.status == "pending")
+            .order_by(PasswordResetRequest.requested_at.asc())
+        ).all()
+    )
+
+
+def _send_password_reset_email(email: str, raw_token: str) -> None:
+    if not settings.smtp_host:
+        raise PasswordResetEmailError(
+            "Password reset email delivery is not configured. Set up SMTP first."
+        )
+
+    reset_url = f"{settings.frontend_url}/reset-password?token={raw_token}"
+    message = EmailMessage()
+    message["Subject"] = "Reset your Omniflow password"
+    message["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email}>"
+    message["To"] = email
+    message.set_content(
+        "A platform administrator approved your password reset request.\n\n"
+        f"Choose a new password using this one-time link:\n{reset_url}\n\n"
+        f"This link expires in {settings.password_reset_expire_minutes} minutes. "
+        "If you did not request a reset, contact your platform administrator."
+    )
+
+    try:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as server:
+            server.starttls()
+            if settings.smtp_username and settings.smtp_password:
+                server.login(settings.smtp_username, settings.smtp_password)
+            server.send_message(message)
+    except (OSError, smtplib.SMTPException):
+        logger.exception("Could not deliver approved password reset email.")
+        raise PasswordResetEmailError(
+            "Could not deliver the reset email. Check SMTP and try approving again."
+        ) from None
+
+
+def approve_password_reset_request(
+    db: Session,
+    request_id: uuid.UUID,
+    admin: User,
+) -> None:
+    reset_request = db.scalar(
+        select(PasswordResetRequest)
+        .where(
+            PasswordResetRequest.id == request_id,
+            PasswordResetRequest.status == "pending",
+        )
+        .with_for_update()
+    )
+    if reset_request is None:
+        raise PasswordResetRequestNotFoundError(
+            "Pending password reset request not found."
+        )
+
+    user = db.get(User, reset_request.user_id)
+    if user is None or not user.is_active:
+        raise PasswordResetRequestNotFoundError(
+            "The account for this reset request is no longer active."
+        )
+
+    raw_token = secrets.token_urlsafe(48)
+    _send_password_reset_email(reset_request.email, raw_token)
+
+    reset_request.status = "approved"
+    reset_request.reviewed_by = admin.id
+    reset_request.reviewed_at = datetime.now(timezone.utc)
+    reset_request.reset_token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    reset_request.token_expires_at = datetime.now(timezone.utc) + timedelta(
+        minutes=settings.password_reset_expire_minutes
+    )
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise
+
+
+def complete_password_reset(
+    db: Session,
+    data: PasswordResetCompleteRequest,
+) -> None:
+    digest = hashlib.sha256(data.token.encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc)
+    reset_request = db.scalar(
+        select(PasswordResetRequest)
+        .where(
+            PasswordResetRequest.reset_token_hash == digest,
+            PasswordResetRequest.status == "approved",
+            PasswordResetRequest.token_expires_at > now,
+        )
+        .with_for_update()
+    )
+    if reset_request is None:
+        raise PasswordResetTokenInvalidError(
+            "This password reset link is invalid or expired."
+        )
+
+    user = db.get(User, reset_request.user_id)
+    if user is None or not user.is_active:
+        raise PasswordResetTokenInvalidError(
+            "This password reset link is invalid or expired."
+        )
+
+    user.password_hash = hash_password(data.password)
+    db.execute(
+        update(UserSession)
+        .where(UserSession.user_id == user.id, UserSession.is_active.is_(True))
+        .values(is_active=False)
+    )
+    db.execute(
+        update(PasswordResetRequest)
+        .where(
+            PasswordResetRequest.user_id == user.id,
+            PasswordResetRequest.status.in_(["pending", "approved"]),
+        )
+        .values(
+            status="completed",
+            reset_token_hash=None,
+            token_expires_at=None,
+        )
+    )
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise

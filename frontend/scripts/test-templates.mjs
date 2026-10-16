@@ -40,10 +40,29 @@ describe("Templates proxy allowlist", () => {
     assert.equal(buildTemplateProxyTarget("GET", [], params("include_inactive=maybe")), null);
   });
 
+  it("allows the shared template library and scoped admin actions", () => {
+    assert.equal(buildTemplateProxyTarget("GET", ["platform-template-library"], params()).backendPath, "/platform-template-library");
+    assert.equal(buildTemplateProxyTarget("GET", ["platform-template-library", "admin-status"], params()).backendPath, "/platform-template-library/admin-status");
+    assert.equal(buildTemplateProxyTarget("POST", ["platform-template-library"], params()).backendPath, "/platform-template-library");
+    assert.equal(buildTemplateProxyTarget("POST", ["platform-template-library", id, "submit"], params()).backendPath, `/platform-template-library/${id}/submit`);
+    assert.equal(buildTemplateProxyTarget("POST", ["platform-template-library", id, "activate"], params()).backendPath, `/platform-template-library/${id}/activate`);
+    assert.equal(buildTemplateProxyTarget("POST", ["platform-template-library", id, "deactivate"], params()).backendPath, `/platform-template-library/${id}/deactivate`);
+    assert.equal(buildTemplateProxyTarget("POST", ["platform-template-library", "not-a-uuid", "submit"], params()), null);
+    assert.equal(buildTemplateProxyTarget("DELETE", ["platform-template-library", id, "submit"], params()), null);
+  });
+
   it("maps template details by id", () => {
     assert.equal(buildTemplateProxyTarget("GET", [id], params()).backendPath, `/templates/${id}`);
     assert.equal(buildTemplateProxyTarget("GET", ["not-a-uuid"], params()), null);
     assert.equal(buildTemplateProxyTarget("GET", [id], params("x=1")), null);
+  });
+
+  it("allows scoped template submissions and channel media uploads only", () => {
+    assert.equal(buildTemplateProxyTarget("POST", ["submit"], params()).backendPath, "/templates/submit");
+    assert.equal(buildTemplateProxyTarget("POST", ["channels", channelId, "media-upload"], params()).backendPath, `/templates/channels/${channelId}/media-upload`);
+    assert.equal(buildTemplateProxyTarget("POST", ["channels", "not-a-uuid", "media-upload"], params()), null);
+    assert.equal(buildTemplateProxyTarget("GET", ["submit"], params()), null);
+    assert.equal(buildTemplateProxyTarget("POST", ["channels", channelId, "media-upload"], params("unexpected=1")), null);
   });
 
   it("reuses the existing channel sync endpoint", () => {

@@ -5,6 +5,7 @@ import { campaignsApi } from '@/lib/campaigns/browser';
 import { listTemplates } from '@/lib/templates/browser';
 import type { MessageTemplate } from '@/lib/api/templates';
 import { useRouter } from 'next/navigation';
+import { uploadTemplateMedia } from '@/lib/templates/browser';
 
 // Distinct {{1}}, {{2}} … body placeholders a template declares, in order.
 function bodyVariables(template: MessageTemplate | undefined): string[] {
@@ -16,6 +17,19 @@ function bodyVariables(template: MessageTemplate | undefined): string[] {
   return Array.from(found);
 }
 
+function headerDetails(template: MessageTemplate | undefined) {
+  if (!template) return { format: '', text: '', variables: [] as string[] };
+  const header = template.components.find((c) => String((c as { type?: string }).type).toLowerCase() === 'header');
+  const text = header && typeof (header as { text?: unknown }).text === 'string'
+    ? String((header as { text: string }).text)
+    : '';
+  return {
+    format: header ? String((header as { format?: unknown }).format ?? '').toUpperCase() : '',
+    text,
+    variables: [...new Set(text.match(/{{\s*[a-z_][a-z0-9_]*\s*}}|{{\s*\d+\s*}}/gi) ?? [])],
+  };
+}
+
 export function CampaignForm() {
   const router = useRouter();
   const [name, setName] = useState('');
@@ -24,6 +38,8 @@ export function CampaignForm() {
   const [textContent, setTextContent] = useState('');
   const [templateId, setTemplateId] = useState('');
   const [templateValues, setTemplateValues] = useState<Record<string, string>>({});
+  const [headerValues, setHeaderValues] = useState<Record<string, string>>({});
+  const [headerMediaFile, setHeaderMediaFile] = useState<File | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
 
   const [channels, setChannels] = useState<{ id: string; name: string; channel_type: string }[]>([]);
@@ -54,8 +70,9 @@ export function CampaignForm() {
     loadDependencies();
   }, []);
 
-  const selectedTemplate = useMemo(() => templates.find(t => t.id === templateId), [templates, templateId]);
+  const selectedTemplate = useMemo(() => templates.find(t => t.id === templateId && t.channel_connection_id === channelId), [templates, templateId, channelId]);
   const variables = useMemo(() => bodyVariables(selectedTemplate), [selectedTemplate]);
+  const header = useMemo(() => headerDetails(selectedTemplate), [selectedTemplate]);
 
   const handlePreview = async () => {
     if (selectedTags.length === 0) {
@@ -84,6 +101,14 @@ export function CampaignForm() {
       setError('Select a template.');
       return;
     }
+    if (msgType === 'template' && !selectedTemplate) {
+      setError('Select an approved template for the selected WhatsApp channel.');
+      return;
+    }
+    if (msgType === 'template' && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(header.format) && !headerMediaFile) {
+      setError(`Choose a ${header.format.toLowerCase()} header file.`);
+      return;
+    }
     if (msgType === 'text' && !textContent.trim()) {
       setError('Enter the message text.');
       return;
@@ -99,9 +124,44 @@ export function CampaignForm() {
       };
       if (msgType === 'template') {
         payload.message_template_id = templateId;
-        payload.template_params = variables.length
-          ? [{ type: 'body', parameters: variables.map((v) => ({ type: 'text', text: templateValues[v] || '' })) }]
-          : [];
+        const components: Record<string, unknown>[] = [];
+        const named = selectedTemplate?.parameter_format?.toUpperCase() === 'NAMED';
+        if (header.format === 'TEXT' && header.variables.length) {
+          components.push({
+            type: 'header',
+            parameters: header.variables.map((v) => ({
+              type: 'text',
+              text: headerValues[v] || '',
+              ...(named && /^[{\s]*[a-z_]/i.test(v) ? { parameter_name: v.replace(/[{}\s]/g, '') } : {}),
+            })),
+          });
+        } else if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(header.format)) {
+          if (!headerMediaFile) throw new Error(`Choose a ${header.format.toLowerCase()} header file.`);
+          const media = await uploadTemplateMedia(
+            channelId,
+            header.format.toLowerCase() as 'image' | 'video' | 'document',
+            headerMediaFile,
+          );
+          components.push({
+            type: 'header',
+            parameters: [{
+              type: header.format.toLowerCase(),
+              id: media.id,
+              ...(header.format === 'DOCUMENT' ? { filename: media.filename } : {}),
+            }],
+          });
+        }
+        if (variables.length) {
+          components.push({
+            type: 'body',
+            parameters: variables.map((v) => ({
+              type: 'text',
+              text: templateValues[v] || '',
+              ...(named && /^[{\s]*[a-z_]/i.test(v) ? { parameter_name: v.replace(/[{}\s]/g, '') } : {}),
+            })),
+          });
+        }
+        payload.template_params = components;
       } else {
         payload.text_content = textContent;
       }
@@ -139,7 +199,13 @@ export function CampaignForm() {
           <select
             required
             value={channelId}
-            onChange={(e) => setChannelId(e.target.value)}
+            onChange={(e) => {
+              setChannelId(e.target.value);
+              setTemplateId('');
+              setTemplateValues({});
+              setHeaderValues({});
+              setHeaderMediaFile(null);
+            }}
             className="w-full text-sm border-slate-300 rounded-lg shadow-sm"
           >
             <option value="">Select a channel</option>
@@ -168,18 +234,42 @@ export function CampaignForm() {
             <div className="space-y-3">
               <select
                 value={templateId}
-                onChange={(e) => { setTemplateId(e.target.value); setTemplateValues({}); }}
+                onChange={(e) => { setTemplateId(e.target.value); setTemplateValues({}); setHeaderValues({}); setHeaderMediaFile(null); }}
                 className="w-full text-sm border-slate-300 rounded-lg shadow-sm"
               >
                 <option value="">Select a template</option>
-                {templates.map((t) => (
+                {templates.filter((t) => t.channel_connection_id === channelId).map((t) => (
                   <option key={t.id} value={t.id} disabled={!t.is_usable}>
                     {t.name} · {t.language}{t.is_usable ? '' : ` (${t.status})`}
                   </option>
                 ))}
               </select>
-              {templates.length === 0 && (
+              {templates.filter((t) => t.channel_connection_id === channelId && t.is_usable).length === 0 && (
                 <p className="text-xs text-slate-500">No synced templates. Sync them on the Templates page first.</p>
+              )}
+              {header.variables.map((v) => (
+                <div key={`header-${v}`}>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Header variable {v}</label>
+                  <input
+                    type="text"
+                    value={headerValues[v] || ''}
+                    onChange={(e) => setHeaderValues((prev) => ({ ...prev, [v]: e.target.value }))}
+                    className="w-full text-sm border-slate-300 rounded-lg shadow-sm"
+                    placeholder={`Value for ${v}`}
+                  />
+                </div>
+              ))}
+              {['IMAGE', 'VIDEO', 'DOCUMENT'].includes(header.format) && (
+                <label className="block text-xs font-medium text-slate-600">
+                  {header.format.toLowerCase()} header file
+                  <input
+                    type="file"
+                    required
+                    accept={header.format === 'IMAGE' ? 'image/jpeg,image/png,.jpg,.jpeg,.png' : header.format === 'VIDEO' ? 'video/mp4,.mp4' : 'application/pdf,.pdf'}
+                    onChange={(e) => setHeaderMediaFile(e.target.files?.[0] ?? null)}
+                    className="mt-1 block w-full text-sm"
+                  />
+                </label>
               )}
               {variables.map((v) => (
                 <div key={v}>

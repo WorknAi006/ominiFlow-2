@@ -245,6 +245,105 @@ class TemplateSyncTests(TemplateTestCase):
 # OUTBOUND TEMPLATE MESSAGES
 # =========================
 
+class TemplateSubmissionTests(TemplateTestCase):
+
+    def test_submit_image_header_template_to_meta(self):
+        response = self.client.post(
+            "/api/v1/templates/submit",
+            headers=self.auth(self.owner, self.tenant_a),
+            data={
+                "channel_connection_id": str(self.wa_a.id),
+                "name": "product_update",
+                "language": "en_US",
+                "category": "MARKETING",
+                "header_format": "IMAGE",
+                "body_text": "Hi {{1}}, your order is ready.",
+                "body_examples_json": '["Asha"]',
+            },
+            files={"header_file": ("sample.png", b"\x89PNG\r\n\x1a\nsample", "image/png")},
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(response.json()["status"], "pending")
+        payload = self.meta.created_templates[0]
+        header = next(component for component in payload["components"] if component["type"] == "HEADER")
+        self.assertEqual(header["format"], "IMAGE")
+        self.assertTrue(header["example"]["header_handle"][0].startswith("handle:"))
+        self.assertEqual(
+            payload["components"][1]["example"]["body_text"],
+            [["Asha"]],
+        )
+        self.assertEqual(len(self.meta.uploaded_template_samples), 1)
+
+    def test_submit_video_and_document_headers_to_meta(self):
+        samples = (
+            ("VIDEO", "clip.mp4", b"\x00\x00\x00\x18ftypisomsample", "video/mp4"),
+            ("DOCUMENT", "terms.pdf", b"%PDF-1.7 sample", "application/pdf"),
+        )
+        for index, (header_format, filename, content, content_type) in enumerate(samples):
+            with self.subTest(header_format=header_format):
+                response = self.client.post(
+                    "/api/v1/templates/submit",
+                    headers=self.auth(self.owner, self.tenant_a),
+                    data={
+                        "channel_connection_id": str(self.wa_a.id),
+                        "name": f"media_{index}_template",
+                        "language": "en_US",
+                        "category": "UTILITY",
+                        "header_format": header_format,
+                        "body_text": "Your requested content.",
+                    },
+                    files={"header_file": (filename, content, content_type)},
+                )
+                self.assertEqual(response.status_code, 201, response.text)
+                header = next(
+                    component for component in self.meta.created_templates[-1]["components"]
+                    if component["type"] == "HEADER"
+                )
+                self.assertEqual(header["format"], header_format)
+                self.assertTrue(header["example"]["header_handle"][0].startswith("handle:"))
+
+    def test_media_header_requires_sample_and_tenant_channel(self):
+        missing_file = self.client.post(
+            "/api/v1/templates/submit",
+            headers=self.auth(self.owner, self.tenant_a),
+            data={
+                "channel_connection_id": str(self.wa_a.id),
+                "name": "missing_sample",
+                "language": "en_US",
+                "category": "UTILITY",
+                "header_format": "DOCUMENT",
+                "body_text": "Your document.",
+            },
+        )
+        self.assertEqual(missing_file.status_code, 422, missing_file.text)
+
+        wrong_channel = self.client.post(
+            "/api/v1/templates/submit",
+            headers=self.auth(self.owner, self.tenant_a),
+            data={
+                "channel_connection_id": str(self.wa_b.id),
+                "name": "wrong_channel",
+                "language": "en_US",
+                "category": "UTILITY",
+                "header_format": "NONE",
+                "body_text": "Hello.",
+            },
+        )
+        self.assertEqual(wrong_channel.status_code, 404, wrong_channel.text)
+        self.assertEqual(self.meta.created_templates, [])
+
+    def test_upload_media_for_template_send_is_channel_scoped(self):
+        response = self.client.post(
+            f"/api/v1/templates/channels/{self.wa_a.id}/media-upload",
+            headers=self.auth(self.owner, self.tenant_a),
+            data={"media_type": "image"},
+            files={"file": ("photo.png", b"\x89PNG\r\n\x1a\nsample", "image/png")},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["id"].startswith("media.T"))
+        self.assertEqual(response.json()["type"], "image")
+
+
 class TemplateSendTests(TemplateTestCase):
 
     def setUp(self) -> None:
@@ -335,6 +434,21 @@ class TemplateSendTests(TemplateTestCase):
             "parameters": [{"type": "document", "document": {"link": "https://files.example.com/inv-9.pdf", "filename": "inv-9.pdf"}}],
         })
 
+        response = self.send({
+            "type": "template", "template_name": "invoice", "language": "en",
+            "components": [
+                {"type": "header", "parameters": [
+                    {"type": "document", "id": "media.uploaded-id", "filename": "inv-10.pdf"},
+                ]},
+                {"type": "body", "parameters": [{"type": "text", "text": "INV-10"}]},
+            ],
+        })
+        self.assertEqual(response.status_code, 201, response.text)
+        self.assertEqual(self.meta.sent[2]["template"]["components"][0], {
+            "type": "header",
+            "parameters": [{"type": "document", "document": {"id": "media.uploaded-id", "filename": "inv-10.pdf"}}],
+        })
+
     def test_invalid_templates_rejected(self):
         wa_b_template = {"type": "template", "template_name": "order_update", "language": "en_US"}
         cases = {
@@ -377,7 +491,12 @@ class TemplateSendTests(TemplateTestCase):
                 self.assertNotIn(TOKEN_A, response.text)
 
         self.assertEqual(self.meta.sent, [])
-        self.assertEqual(self.db.query(Message).filter_by(direction="outbound").count(), 0)
+        self.assertEqual(
+            self.db.query(Message)
+            .filter_by(tenant_id=self.tenant_a.id, direction="outbound")
+            .count(),
+            0,
+        )
 
     def test_template_of_other_channel_not_usable(self):
         # Template exists only on a second channel of the same tenant.
@@ -403,7 +522,11 @@ class TemplateSendTests(TemplateTestCase):
         response = self.send(self.order_update())
         self.assertEqual(response.status_code, 502)
         self.assertNotIn(TOKEN_A, response.text)
-        [message] = self.db.query(Message).filter_by(direction="outbound").all()
+        [message] = (
+            self.db.query(Message)
+            .filter_by(tenant_id=self.tenant_a.id, direction="outbound")
+            .all()
+        )
         self.assertEqual((message.status, message.error_code, message.message_type), ("failed", "132001", "template"))
         self.assertIn("[redacted]", message.error_message)
 

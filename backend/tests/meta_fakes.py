@@ -42,6 +42,8 @@ class FakeMeta:
     download_timeout: bool = False
     sent: list[dict] = field(default_factory=list)
     uploaded_media: list[httpx.Request] = field(default_factory=list)
+    uploaded_template_samples: list[httpx.Request] = field(default_factory=list)
+    created_templates: list[dict] = field(default_factory=list)
 
     def add_media(self, media_id: str, item: FakeMedia) -> FakeMedia:
         item.url = item.url or f"https://{MEDIA_HOST}/whatsapp_business/attachments/?mid={media_id}&hash=sig"
@@ -62,7 +64,8 @@ class FakeMeta:
         if self.network_down:
             raise httpx.ConnectError("connection refused", request=request)
 
-        token = request.headers.get("authorization", "").removeprefix("Bearer ")
+        authorization = request.headers.get("authorization", "")
+        token = authorization.removeprefix("Bearer ").removeprefix("OAuth ")
         host = request.url.host
 
         # ---- CDN download ----
@@ -83,7 +86,8 @@ class FakeMeta:
             return httpx.Response(200, content=b"stolen")
 
         # ---- Graph API ----
-        if request.url.params.get("appsecret_proof") != appsecret_proof(self.app_secret, token):
+        is_resumable_upload = request.url.path.endswith("/uploads") or request.headers.get("file_offset") == "0"
+        if not is_resumable_upload and request.url.params.get("appsecret_proof") != appsecret_proof(self.app_secret, token):
             return self._error(400, "Invalid appsecret_proof", 100)
         if token not in self.tokens:
             return self._error(401, f"Error validating access token {token}", 190)
@@ -93,6 +97,13 @@ class FakeMeta:
 
         _, _, path = request.url.path.lstrip("/").partition("/")
         parts = path.split("/")
+
+        if request.method == "POST" and parts[-1] == "uploads":
+            return httpx.Response(200, json={"id": f"upload:{uuid.uuid4().hex}"})
+
+        if request.method == "POST" and authorization.startswith("OAuth ") and request.headers.get("file_offset") == "0":
+            self.uploaded_template_samples.append(request)
+            return httpx.Response(200, json={"h": f"handle:{uuid.uuid4().hex}"})
 
         if request.method == "POST" and len(parts) == 2 and parts[1] == "messages":
             if self.send_error:
@@ -105,6 +116,13 @@ class FakeMeta:
         if request.method == "POST" and len(parts) == 2 and parts[1] == "media":
             self.uploaded_media.append(request)
             return httpx.Response(200, json={"id": f"media.T{uuid.uuid4().hex}"})
+
+        if request.method == "POST" and len(parts) == 2 and parts[1] == "message_templates":
+            if parts[0] not in self.tokens[token]:
+                return self._error(400, "Object does not exist", 100)
+            payload = json.loads(request.content)
+            self.created_templates.append(payload)
+            return httpx.Response(200, json={"id": f"tpl.T{uuid.uuid4().hex}", "status": "PENDING"})
 
         if len(parts) == 2 and parts[1] == "message_templates":
             waba = parts[0]

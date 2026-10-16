@@ -117,6 +117,16 @@ def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+def require_platform_super_admin(
+    user: CurrentUser,
+) -> None:
+    if not user.is_platform_super_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform super-admin access is required.",
+        )
+
+
 # =========================
 # TENANT CONTEXT
 # =========================

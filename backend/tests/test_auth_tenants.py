@@ -3,10 +3,15 @@ Regression tests for authentication, auth dependencies, tenant context,
 RBAC and tenant management.
 """
 import uuid
+import re
+from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 import jwt
 
+from app.core.config import settings
 from app.core.security import create_access_token, decode_token
+from app.models import PasswordResetRequest, UserSession
 from tests.base import TEST_PASSWORD, DatabaseTestCase, bearer, unique
 
 TENANT_URL = "/api/v1/tenants/current"
@@ -70,6 +75,90 @@ class AuthTenantTests(DatabaseTestCase):
         self.assertEqual(claims["type"], "access")
         self.assertEqual(claims["sub"], str(self.owner_a.id))
         self.assertEqual(claims["tenant_id"], str(self.tenant_a.id))
+
+    def test_logout_revokes_the_backend_session(self):
+        response = self.client.post("/api/v1/auth/login", json={
+            "email": self.owner_a.email,
+            "password": TEST_PASSWORD,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        token = response.json()["access_token"]
+        claims = decode_token(token)
+        self.assertIn("session_id", claims)
+
+        logout = self.client.post("/api/v1/auth/logout", headers=bearer(token))
+        self.assertEqual(logout.status_code, 204)
+        self.assertFalse(self.db.get(UserSession, uuid.UUID(claims["session_id"])).is_active)
+        self.assertEqual(
+            self.client.get(TENANT_URL, headers=bearer(token)).status_code,
+            401,
+        )
+
+    def test_password_reset_requires_platform_admin_review_and_revokes_sessions(self):
+        original_smtp = (settings.smtp_host, settings.frontend_url)
+        settings.smtp_host = "smtp.example.test"
+        settings.frontend_url = "https://app.example.test"
+        try:
+            request = self.client.post(
+                "/api/v1/auth/password-reset-requests",
+                json={"email": self.owner_a.email},
+            )
+            self.assertEqual(request.status_code, 202, request.text)
+            self.assertIn("administrator", request.json()["message"])
+            reset_request = self.db.query(PasswordResetRequest).filter_by(
+                user_id=self.owner_a.id,
+            ).one()
+
+            non_admin = self.client.get(
+                "/api/v1/auth/password-reset-requests",
+                headers=self.auth(self.owner_a, self.tenant_a),
+            )
+            self.assertEqual(non_admin.status_code, 403)
+
+            self.owner_a.is_platform_super_admin = True
+            self.db.commit()
+            admin_headers = self.auth(self.owner_a, self.tenant_a)
+            response = self.client.get(
+                "/api/v1/auth/password-reset-requests",
+                headers=admin_headers,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(len(response.json()), 1)
+
+            with patch("app.services.auth_service.smtplib.SMTP") as smtp:
+                approval = self.client.post(
+                    f"/api/v1/auth/password-reset-requests/{reset_request.id}/approve",
+                    headers=admin_headers,
+                )
+                self.assertEqual(approval.status_code, 204, approval.text)
+                server = smtp.return_value.__enter__.return_value
+                message = server.send_message.call_args.args[0]
+                content = message.get_body(preferencelist=("plain",)).get_content()
+                link = re.search(r"https://app\.example\.test/reset-password\?token=([^\s]+)", content)
+                self.assertIsNotNone(link)
+                reset_token = parse_qs(urlsplit(link.group(0)).query)["token"][0]
+
+            new_password = "ChangedPassword#2026"
+            complete = self.client.post(
+                "/api/v1/auth/reset-password",
+                json={"token": reset_token, "password": new_password},
+            )
+            self.assertEqual(complete.status_code, 204, complete.text)
+            self.assertEqual(
+                self.client.post("/api/v1/auth/reset-password", json={
+                    "token": reset_token, "password": new_password,
+                }).status_code,
+                400,
+            )
+            self.assertEqual(
+                self.client.post("/api/v1/auth/login", json={
+                    "email": self.owner_a.email,
+                    "password": new_password,
+                }).status_code,
+                200,
+            )
+        finally:
+            settings.smtp_host, settings.frontend_url = original_smtp
 
     def test_login_failures_are_identical(self):
         wrong_password = self.client.post("/api/v1/auth/login", json={

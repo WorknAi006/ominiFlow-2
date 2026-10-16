@@ -31,6 +31,7 @@ from app.models.message import (
 )
 from app.models.message_media import MediaStatus, MessageMedia
 from app.models.message_template import USABLE_TEMPLATE_STATUSES, MessageTemplate
+from app.models.platform_template import PlatformTemplate
 from app.models.automation import (
     Automation, AutomationMatchType, AutomationRun, AutomationRunStatus,
     AutomationThenMode, AutomationTrigger,
@@ -50,6 +51,7 @@ from app.models.campaign import Campaign, CampaignStatus
 from app.models.campaign_recipient import CampaignRecipient, CampaignRecipientStatus
 from app.models.knowledge_base import KnowledgeBase, KnowledgeDocument
 from app.models.user_session import UserSession
+from app.models.password_reset_request import PasswordResetRequest
 from app.models.flow import Flow, FlowStatus
 from app.models.flow_session import FlowSession, FlowSessionStatus, FlowSessionWait
 from app.models.keyword_trigger import KeywordTrigger, KeywordTriggerAction, KeywordTriggerStatus
@@ -85,6 +87,7 @@ __all__ = [
     "MessageMedia",
     "USABLE_TEMPLATE_STATUSES",
     "MessageTemplate",
+    "PlatformTemplate",
     "Automation", "AutomationRun", "AutomationTrigger", "AutomationThenMode",
     "AutomationMatchType", "AutomationRunStatus",
     "OAuthState", "OAuthStatus",
@@ -104,6 +107,7 @@ __all__ = [
     "KnowledgeBase",
     "KnowledgeDocument",
     "UserSession",
+    "PasswordResetRequest",
     "Flow",
     "FlowStatus",
     "FlowSession",

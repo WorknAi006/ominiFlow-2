@@ -426,6 +426,42 @@ class WhatsAppProvider(ChannelProvider):
             raise ProviderRequestError("WhatsApp did not return a media id.")
         return media_id
 
+    def upload_template_sample(
+        self,
+        credentials: ProviderCredentials,
+        data: bytes,
+        content_type: str,
+    ) -> str:
+        """Upload a template-review sample and return Meta's header handle."""
+        with self._client() as client:
+            session = self._graph(
+                lambda: client.request(
+                    "POST",
+                    f"{client.app_id}/uploads",
+                    access_token=credentials.access_token,
+                    params={"file_length": str(len(data)), "file_type": content_type},
+                    with_proof=False,
+                )
+            )
+            upload_id = session.get("id")
+            if not isinstance(upload_id, str) or not upload_id.startswith("upload:"):
+                raise ProviderRequestError("Meta did not return a valid template upload session.")
+            result = self._graph(
+                lambda: client.request(
+                    "POST",
+                    upload_id,
+                    access_token=credentials.access_token,
+                    content=data,
+                    request_headers={"file_offset": "0"},
+                    authorization_scheme="OAuth",
+                    with_proof=False,
+                )
+            )
+        handle = result.get("h")
+        if not isinstance(handle, str) or not handle:
+            raise ProviderRequestError("Meta did not return a template media handle.")
+        return handle
+
     @staticmethod
     def _interactive_header(header: dict[str, Any]) -> dict[str, Any]:
         """Build an interactive header object from a resolved header dict:
@@ -664,6 +700,23 @@ class WhatsAppProvider(ChannelProvider):
                     break
 
         return templates
+
+    def create_template(
+        self,
+        credentials: ProviderCredentials,
+        waba_id: str,
+        template: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Submit one template definition to the selected WABA for review."""
+        with self._client() as client:
+            return self._graph(
+                lambda: client.request(
+                    "POST",
+                    f"{waba_id}/message_templates",
+                    access_token=credentials.access_token,
+                    json=template,
+                )
+            )
 
     # ---------- ChannelProvider interface ----------
 

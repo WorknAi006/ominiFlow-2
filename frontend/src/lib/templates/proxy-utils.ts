@@ -31,6 +31,40 @@ export function buildTemplateProxyTarget(
 ): TemplateProxyTarget | null {
   const empty = new URLSearchParams();
 
+  if (segments.length === 1 && segments[0] === "platform-template-library") {
+    if (method === "GET" && params.size === 0) {
+      return { backendPath: "/platform-template-library", method: "GET", query: empty };
+    }
+    if (method === "POST" && params.size === 0) {
+      return { backendPath: "/platform-template-library", method: "POST", query: empty };
+    }
+  }
+
+  if (
+    segments.length === 2 &&
+    segments[0] === "platform-template-library" &&
+    segments[1] === "admin-status" &&
+    method === "GET" &&
+    params.size === 0
+  ) {
+    return { backendPath: "/platform-template-library/admin-status", method: "GET", query: empty };
+  }
+
+  if (
+    segments.length === 3 &&
+    segments[0] === "platform-template-library" &&
+    UUID_PATTERN.test(segments[1]) &&
+    method === "POST" &&
+    params.size === 0 &&
+    ["activate", "deactivate", "submit"].includes(segments[2])
+  ) {
+    return {
+      backendPath: `/platform-template-library/${segments[1]}/${segments[2]}`,
+      method: "POST",
+      query: empty,
+    };
+  }
+
   // GET /templates — tenant-wide list with filters.
   if (segments.length === 0 && method === "GET") {
     const allowed = new Set([
@@ -85,6 +119,21 @@ export function buildTemplateProxyTarget(
   // POST /templates — create a local (draft) template.
   if (segments.length === 0 && method === "POST" && params.size === 0) {
     return { backendPath: "/templates", method: "POST", query: empty };
+  }
+
+  if (segments.length === 1 && segments[0] === "submit" && method === "POST" && params.size === 0) {
+    return { backendPath: "/templates/submit", method: "POST", query: empty };
+  }
+
+  if (
+    segments.length === 3 &&
+    segments[0] === "channels" &&
+    UUID_PATTERN.test(segments[1]) &&
+    segments[2] === "media-upload" &&
+    method === "POST" &&
+    params.size === 0
+  ) {
+    return { backendPath: `/templates/channels/${segments[1]}/media-upload`, method: "POST", query: empty };
   }
 
   // POST /templates/sync/{channel_id} — reuse the existing channel sync.

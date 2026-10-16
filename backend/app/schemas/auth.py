@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -14,6 +15,28 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
+
+
+class PasswordResetRequestCreate(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetCompleteRequest(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class PasswordResetRequestResponse(BaseModel):
+    id: UUID
+    email: EmailStr
+    status: str
+    requested_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PasswordResetStatusResponse(BaseModel):
+    is_platform_super_admin: bool
 
 
 class UserResponse(BaseModel):
