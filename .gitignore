@@ -14,3 +14,7 @@ node_modules/
 .coverage
 # Locally stored customer media (never commit)
 backend/var/
+
+
+AdminSide/.env
+AdminSide/**/.env

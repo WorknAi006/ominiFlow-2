@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Omniflow Web Chat — demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 60px auto; padding: 0 20px; color: #1e293b; }
+    code { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; }
+    .note { color: #64748b; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>Omniflow Web Chat — demo page</h1>
+  <p>This is a sample website. The chat widget loads in the bottom-right corner.</p>
+  <p class="note">
+    Replace <code>PUBLIC_KEY</code> below with the widget key shown on your
+    Channels page, and <code>data-omniflow-api</code> with your Omniflow API
+    base URL. To try it here, append <code>?key=wc_xxx&amp;api=http://localhost:8000</code>
+    to this page's URL.
+  </p>
+
+  <script>
+    // Demo convenience: read the key/api from the query string so you can
+    // test without editing the file. In production you hard-code them.
+    (function () {
+      var q = new URLSearchParams(window.location.search);
+      var key = q.get("key") || "PUBLIC_KEY";
+      var api = q.get("api") || window.location.origin;
+      var s = document.createElement("script");
+      s.src = "/omniflow-webchat.js";
+      s.setAttribute("data-omniflow-key", key);
+      s.setAttribute("data-omniflow-api", api);
+      document.body.appendChild(s);
+    })();
+  </script>
+</body>
+</html>
