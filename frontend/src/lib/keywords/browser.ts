@@ -11,6 +11,7 @@ export interface Keyword {
   flow_name: string | null;
   reply_text: string | null;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface KeywordCreateInput {

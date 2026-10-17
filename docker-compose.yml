@@ -8,10 +8,10 @@ services:
     environment:
       POSTGRES_DB: omniflow
       POSTGRES_USER: omniflow
-      POSTGRES_PASSWORD: omniflow_local_dev_password
+      POSTGRES_PASSWORD: NavinPassword123
 
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
 
     volumes:
       - omniflow_postgres_data:/var/lib/postgresql/data
