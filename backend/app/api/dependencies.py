@@ -284,3 +284,46 @@ def require_permission(
             )
 
     return permission_dependency
+
+
+# =========================
+# PLATFORM / SUPER ADMIN
+# =========================
+
+def get_current_platform_admin(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(bearer_scheme),
+    ],
+    db: DbSession,
+) -> User:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise _credentials_exception()
+
+    try:
+        payload = decode_token(credentials.credentials)
+    except jwt.PyJWTError:
+        raise _credentials_exception()
+
+    if payload.get("type") != "access":
+        raise _credentials_exception()
+
+    user_id = _parse_uuid(payload.get("sub"))
+    if user_id is None:
+        raise _credentials_exception()
+
+    user = db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise _credentials_exception()
+
+    if not (getattr(user, "is_platform_admin", False) or getattr(user, "is_platform_super_admin", False)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super admin authorization required.",
+        )
+
+    return user
+
+
+CurrentPlatformAdmin = Annotated[User, Depends(get_current_platform_admin)]
+

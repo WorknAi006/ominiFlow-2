@@ -15,3 +15,6 @@ node_modules/
 # Locally stored customer media (never commit)
 backend/var/
 *.mp4
+
+AdminSide/.env
+AdminSide/**/.env

@@ -55,3 +55,11 @@ class User(Base, UUIDMixin, TimestampMixin):
         nullable=False,
         index=True,
     )
+
+    @property
+    def is_platform_admin(self) -> bool:
+        return bool(self.is_platform_super_admin)
+
+    @is_platform_admin.setter
+    def is_platform_admin(self, value: bool) -> None:
+        self.is_platform_super_admin = bool(value)
