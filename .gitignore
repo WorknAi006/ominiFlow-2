@@ -18,3 +18,5 @@ backend/var/
 
 AdminSide/.env
 AdminSide/**/.env
+.cache/
+.deployment/

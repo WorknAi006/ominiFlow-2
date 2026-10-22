@@ -28,7 +28,7 @@ export default function UnauthorizedPage() {
             Sign in with Super Admin Account
           </button>
           <a
-            href="http://localhost:3000"
+            href={process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}
             className="block w-full py-2.5 px-4 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-sm transition-colors"
           >
             Go to Customer Application

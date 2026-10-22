@@ -1,44 +1,149 @@
+name: fmfilms
+
+x-runtime: &runtime
+  restart: unless-stopped
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+x-backend: &backend
+  <<: *runtime
+  image: fmfilms-backend:${IMAGE_TAG:-local}
+  env_file: .env
+  environment:
+    APP_ENV: production
+    DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the VPS .env}
+    REDIS_URL: redis://redis:6379/0
+    FRONTEND_URL: https://fmfilms.in
+    FRONTEND_ORIGINS: https://fmfilms.in,https://www.fmfilms.in,https://admin.fmfilms.in
+    META_OAUTH_REDIRECT_URI: https://fmfilms.in/api/v1/channels/oauth/callback
+    MEDIA_STORAGE_BACKEND: local
+    MEDIA_LOCAL_ROOT: /app/var/media
+  volumes:
+    - media:/app/var/media
+  networks:
+    - fmfilms_internal
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
 services:
+  web:
+    <<: *runtime
+    image: fmfilms-web:${IMAGE_TAG:-local}
+    container_name: fmfilms-web
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      OMNIFLOW_API_URL: http://fmfilms-backend:8000
+    networks:
+      - fmfilms_internal
+      - public_gateway
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  admin:
+    <<: *runtime
+    image: fmfilms-admin:${IMAGE_TAG:-local}
+    container_name: fmfilms-admin
+    build:
+      context: .
+      dockerfile: Dockerfile.admin
+    environment:
+      OMNIFLOW_API_URL: http://fmfilms-backend:8000
+    networks:
+      - fmfilms_internal
+      - public_gateway
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  backend:
+    <<: *backend
+    container_name: fmfilms-backend
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, "8000", --proxy-headers, --forwarded-allow-ips, "*"]
+    networks:
+      - fmfilms_internal
+      - public_gateway
+    healthcheck:
+      test: [CMD, python, /app/healthcheck.py, api]
+      interval: 20s
+      timeout: 8s
+      start_period: 30s
+      retries: 5
+
+  whatsapp-events:
+    <<: *backend
+    command: [python, -m, app.workers.whatsapp_events, --loop]
+  whatsapp-media:
+    <<: *backend
+    command: [python, -m, app.workers.whatsapp_media, --loop]
+  automations:
+    <<: *backend
+    command: [python, -m, app.workers.automations, --loop]
+  campaigns:
+    <<: *backend
+    command: [python, -m, app.workers.campaigns, --loop]
+  flow-delivery:
+    <<: *backend
+    command: [python, -m, app.workers.flow_delivery, --loop]
+  knowledge-base:
+    <<: *backend
+    command: [python, -m, app.workers.knowledge_base, --loop]
 
   postgres:
-    image: postgres:16
-    container_name: omniflow-postgres
-    restart: unless-stopped
-
+    <<: *runtime
+    image: postgres:16-alpine
+    container_name: fmfilms-postgres
     environment:
-      POSTGRES_DB: omniflow
-      POSTGRES_USER: omniflow
-      POSTGRES_PASSWORD: NavinPassword123
-
-    ports:
-      - "5433:5432"
-
+      POSTGRES_DB: fmfilms
+      POSTGRES_USER: fmfilms
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the VPS .env}
     volumes:
-      - omniflow_postgres_data:/var/lib/postgresql/data
-
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - fmfilms_internal
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U omniflow -d omniflow"]
+      test: [CMD-SHELL, "pg_isready -U fmfilms -d fmfilms"]
       interval: 5s
       timeout: 5s
-      retries: 10
-
+      retries: 20
 
   redis:
+    <<: *runtime
     image: redis:7-alpine
-    container_name: omniflow-redis
-    restart: unless-stopped
-
-    ports:
-      - "6379:6379"
-
+    container_name: fmfilms-redis
+    command: [redis-server, --appendonly, "yes"]
     volumes:
-      - omniflow_redis_data:/data
+      - redis_data:/data
+    networks:
+      - fmfilms_internal
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
-    command: redis-server --appendonly yes
-
+networks:
+  fmfilms_internal:
+    driver: bridge
+  public_gateway:
+    external: true
+    name: lovenzea_default
 
 volumes:
-
-  omniflow_postgres_data:
-
-  omniflow_redis_data:
+  postgres_data:
+  redis_data:
+  media:

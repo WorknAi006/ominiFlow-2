@@ -1,0 +1,22 @@
+FROM python:3.11-slim-bookworm AS build
+WORKDIR /build
+COPY backend/requirements.txt ./
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
+
+FROM python:3.11-slim-bookworm AS runtime
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /app
+COPY --from=build /wheels /wheels
+COPY backend/requirements.txt ./
+RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
+    && rm -rf /wheels \
+    && useradd --uid 10001 --create-home app \
+    && mkdir -p /app/var/media && chown -R app:app /app
+COPY --chown=app:app backend/app ./app
+COPY --chown=app:app backend/alembic ./alembic
+COPY --chown=app:app backend/alembic.ini ./
+COPY deploy/healthcheck.py /app/healthcheck.py
+USER app
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=5 CMD ["python", "/app/healthcheck.py", "worker"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
