@@ -110,19 +110,9 @@ services:
     image: postgres:16-alpine
     container_name: fmfilms-postgres
     environment:
-<<<<<<< HEAD
-      POSTGRES_DB: omniflow
-      POSTGRES_USER: omniflow
-      POSTGRES_PASSWORD: NavinPassword123
-
-    ports:
-      - "${POSTGRES_PORT:-5433}:5432"
-
-=======
       POSTGRES_DB: fmfilms
       POSTGRES_USER: fmfilms
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the VPS .env}
->>>>>>> 63d65d07564028eb042a79fb6385b6013435d055
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
