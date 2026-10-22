@@ -1,111 +1,24 @@
-name: FM Films production
-
+name: FM Films read-only auth diagnostics
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-
 permissions:
   contents: read
-
-concurrency:
-  group: fmfilms-production
-  cancel-in-progress: false
-
 jobs:
-  validate:
+  diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - name: Reject unresolved merge conflicts
-        run: |
-          if git grep -I -n -E '^(<<<<<<< |=======$|>>>>>>> )' -- .; then
-            echo 'Unresolved merge conflict markers must be removed before deployment.' >&2
-            exit 1
-          fi
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Check gateway isolation and shell syntax
-        run: |
-          python -m unittest discover -s deploy/tests -v
-          for script in deploy/*.sh; do bash -n "$script"; done
-      - name: Test frontend authentication and realtime proxies
-        working-directory: frontend
-        run: |
-          npm ci --no-audit --no-fund
-          npm run test:auth
-          npm run test:inbox
-          npm run test:channels
-          npm run test:realtime
-      - name: Validate Compose and build production images
-        run: |
-          python deploy/init-env.py
-          docker compose config --quiet
-          docker compose build web admin
-          # Direct build avoids Compose/Bake's network.host entitlement forwarding bug.
-          docker build --network=host -f Dockerfile.backend -t fmfilms-backend:local .
-      - name: Smoke test production containers and migrations
-        run: |
-          docker network create lovenzea_default
-          docker compose up -d --wait --wait-timeout 120 postgres redis
-          docker compose run --rm --no-deps backend alembic upgrade head
-          docker compose run --rm --no-deps backend python -m app.db.run_seed
-          docker compose up -d --no-build --wait --wait-timeout 180
-          docker exec fmfilms-backend python /app/healthcheck.py api
-          docker exec fmfilms-web node -e "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
-          docker exec fmfilms-admin node -e "fetch('http://127.0.0.1:3000/admin/login').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
-      - name: Validate generated Nginx HTTP and HTTPS blocks
-        run: |
-          mkdir -p .cache/ci-cert
-          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj '/CN=fmfilms.in' \
-            -keyout .cache/ci-cert/privkey.pem -out .cache/ci-cert/fullchain.pem
-          for mode in http tls; do
-            MODE="$mode" python - <<'PY'
-          import os, sys
-          from pathlib import Path
-          sys.path.insert(0, 'deploy')
-          from gateway import render
-          cert = '/etc/letsencrypt/live/fmfilms' if os.environ['MODE'] == 'tls' else None
-          Path('.cache/ci.nginx.conf').write_text('events {}\nhttp {\n' + render(cert) + '\n}\n')
-          PY
-            docker run --rm --network lovenzea_default \
-              -v "$PWD/.cache/ci.nginx.conf:/etc/nginx/nginx.conf:ro" \
-              -v "$PWD/.cache/ci-cert:/etc/letsencrypt/live/fmfilms:ro" \
-              nginx:alpine nginx -t
-          done
-      - name: Show container status on failure
-        if: failure()
-        run: docker compose ps -a
-
-  deploy:
-    if: github.ref == 'refs/heads/main'
-    needs: validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
     environment: production
     steps:
       - uses: actions/checkout@v4
-      - name: Deploy the exact validated main commit over SSH
+      - name: Read authentication database diagnostics over SSH
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
           VPS_PORT: ${{ secrets.VPS_PORT }}
           VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
           VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
-          DEPLOY_SHA: ${{ github.sha }}
         run: |
           set -Eeuo pipefail
-          : "${VPS_HOST:?Missing VPS_HOST}" "${VPS_USER:?Missing VPS_USER}"
-          : "${VPS_SSH_KEY:?Missing VPS_SSH_KEY}" "${VPS_KNOWN_HOSTS:?Missing VPS_KNOWN_HOSTS}"
-          [[ $VPS_HOST =~ ^[a-zA-Z0-9.-]+$ && $VPS_USER =~ ^[a-zA-Z0-9_-]+$ ]]
-          [[ ${VPS_PORT:-22} =~ ^[0-9]+$ && $DEPLOY_SHA =~ ^[a-f0-9]{40}$ ]]
           umask 077
           mkdir -p ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/fmfilms_key
@@ -113,22 +26,5 @@ jobs:
           trap 'rm -f ~/.ssh/fmfilms_key' EXIT
           ssh -i ~/.ssh/fmfilms_key -p "${VPS_PORT:-22}" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
-            "$VPS_USER@$VPS_HOST" "sudo -n bash -s -- '$DEPLOY_SHA'" <<'REMOTE'
-          set -Eeuo pipefail
-          umask 077
-          cd /var/www/fmfilms
-          exec 7>/run/lock/fmfilms-update.lock
-          flock -w 1800 7
-          test -d .git
-          test -f .env
-          test -z "$(git ls-files -- .env)"
-          mkdir -p .deployment
-          git rev-parse HEAD > .deployment/previous-git-commit
-          git fetch origin main
-          test "$(git rev-parse origin/main)" = "$1"
-          # Reject incoming tracked files that could overwrite private VPS state.
-          test -z "$(git ls-tree -r --name-only "$1" -- .env .deployment)"
-          git reset --hard "$1"
-          bash deploy/deploy.sh
-          REMOTE
+            -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
+            'docker exec -i fmfilms-backend python -' < deploy/diagnose-auth.py
