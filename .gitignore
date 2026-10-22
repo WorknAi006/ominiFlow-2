@@ -20,3 +20,10 @@ AdminSide/.env
 AdminSide/**/.env
 .cache/
 .deployment/
+
+# VPS production backups
+Dockerfile.backend.backup.*
+docker-compose.yml.backup.*
+.env.backup.*
+.env.edited.*
+.env.before-repair.*
