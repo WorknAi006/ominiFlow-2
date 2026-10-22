@@ -27,4 +27,4 @@ jobs:
           ssh -i ~/.ssh/fmfilms_key -p "${VPS_PORT:-22}" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o ConnectTimeout=15 "$VPS_USER@$VPS_HOST" \
-            'docker exec -i fmfilms-backend python -' < deploy/diagnose-auth.py
+            'docker exec -i fmfilms-backend python -' < deploy/check-auth-transaction.py
