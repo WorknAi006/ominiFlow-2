@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -33,6 +35,8 @@ from app.api.routing_config import router as routing_config_router
 from app.api.payments import router as payments_router
 from app.api.admin import router as admin_router
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 app = FastAPI(
@@ -290,6 +294,10 @@ def start_whatsapp_worker():
 
 @app.on_event("startup")
 def ensure_default_platform_super_admin():
+    # The development convenience account has public example credentials.
+    # Production administrators must be provisioned explicitly.
+    if settings.is_production:
+        return
     from app.core.database import SessionLocal
     from app.models.user import User
     from app.core.security import hash_password

@@ -51,6 +51,11 @@ jobs:
           docker compose build web admin
           # Direct build avoids Compose/Bake's network.host entitlement forwarding bug.
           docker build --network=host -f Dockerfile.backend -t fmfilms-backend:local .
+      - name: Test backend startup hooks
+        run: |
+          docker compose run --rm --no-deps \
+            -v "$PWD/backend/tests/test_startup.py:/app/test_startup.py:ro" \
+            backend python -m unittest test_startup -v
       - name: Smoke test production containers and migrations
         run: |
           docker network create lovenzea_default
@@ -82,7 +87,9 @@ jobs:
           done
       - name: Show container status on failure
         if: failure()
-        run: docker compose ps -a
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color --tail=100 backend
 
   deploy:
     if: github.ref == 'refs/heads/main'
