@@ -39,7 +39,12 @@ declare global {
       init: (options: { appId: string; autoLogAppEvents: boolean; xfbml: boolean; version: string }) => void;
       login: (
         callback: (response: FacebookLoginResponse) => void,
-        options: { config_id: string; response_type: "code"; override_default_response_type: boolean; extras: { setup: Record<string, never> } },
+        options: {
+          config_id: string;
+          response_type: "code";
+          override_default_response_type: boolean;
+          extras: Record<string, unknown>;
+        },
       ) => void;
     };
     fbAsyncInit?: () => void;
@@ -173,7 +178,11 @@ function runEmbeddedSignup(configId: string, sdk: NonNullable<Window["FB"]>): Pr
       config_id: configId,
       response_type: "code",
       override_default_response_type: true,
-      extras: { setup: {} },
+      extras: {
+        setup: {},
+        featureType: "whatsapp_business_app_onboarding",
+        sessionInfoVersion: "3",
+      },
     });
   });
 }
