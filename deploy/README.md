@@ -94,11 +94,13 @@ nano .env
 bash deploy/deploy.sh --bootstrap
 ```
 
-Use a current Docker Compose v2 with `up --wait`, `--wait-timeout` and `--pull`.
+Use Docker Compose 2.27.1 or newer with `up --wait`, `--wait-timeout` and `--pull`.
 The backend build uses `build.network: host` because Docker bridge networking
 was unreliable for PyPI on this VPS. Its wheel download has a 300-second
 timeout and ten retries. Dependency pins, including SQLAlchemy and Alembic,
-are unchanged. This does not set runtime `network_mode: host`; all six workers
+are unchanged. `build.entitlements: [network.host]` explicitly grants the
+requested build network privilege to Compose/Bake; without it, CI rejects the
+build before downloading dependencies. This does not set runtime `network_mode: host`; all six workers
 continue sharing the single backend image. If a transient failure needs a
 fresh build, run `docker compose build --no-cache backend`, then retry the
 normal deployment. Do not change package versions to work around networking.
