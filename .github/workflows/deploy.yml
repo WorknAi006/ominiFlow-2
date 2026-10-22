@@ -42,7 +42,9 @@ jobs:
         run: |
           python deploy/init-env.py
           docker compose config --quiet
-          docker compose build web admin backend
+          docker compose build web admin
+          # Direct build avoids Compose/Bake's network.host entitlement forwarding bug.
+          docker build --network=host -f Dockerfile.backend -t fmfilms-backend:local .
       - name: Smoke test production containers and migrations
         run: |
           docker network create lovenzea_default

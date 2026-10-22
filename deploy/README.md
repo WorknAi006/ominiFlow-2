@@ -94,16 +94,25 @@ nano .env
 bash deploy/deploy.sh --bootstrap
 ```
 
-Use Docker Compose 2.27.1 or newer with `up --wait`, `--wait-timeout` and `--pull`.
+Use a current Docker Compose v2 or newer with `up --wait`, `--wait-timeout` and `--pull`.
 The backend build uses `build.network: host` because Docker bridge networking
 was unreliable for PyPI on this VPS. Its wheel download has a 300-second
 timeout and ten retries. Dependency pins, including SQLAlchemy and Alembic,
-are unchanged. `build.entitlements: [network.host]` explicitly grants the
-requested build network privilege to Compose/Bake; without it, CI rejects the
-build before downloading dependencies. This does not set runtime `network_mode: host`; all six workers
-continue sharing the single backend image. If a transient failure needs a
-fresh build, run `docker compose build --no-cache backend`, then retry the
-normal deployment. Do not change package versions to work around networking.
+are unchanged. Current Compose/Bake versions can fail to forward the required
+`network.host` permission even when it is declared in Compose. CI and the VPS
+deployment therefore build web/admin with Compose and the shared backend with
+the direct `docker build --network=host` command already verified on the VPS.
+The backend image is tagged with the same release tag used by Compose and all
+six workers. This does not set runtime `network_mode: host`. Do not change
+package versions to work around networking. For manual diagnosis only, the
+known working fresh-build command is:
+
+```bash
+docker build --network=host --no-cache -f Dockerfile.backend -t fmfilms-backend:local .
+```
+
+Normal deployments keep caching and use their unique release tag instead of
+`local`. See the [upstream Compose/Bake entitlement issue](https://github.com/docker/compose/issues/14345).
 
 The helper checks the gateway's network, running state and the exact mounts
 documented in the request. If the real server uses different mount source

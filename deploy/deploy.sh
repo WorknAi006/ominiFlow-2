@@ -34,7 +34,10 @@ cp -p /var/www/lovenzea_v1/gateway.nginx.conf "$release/gateway.before.conf"
 compose() { docker compose --project-name fmfilms --env-file .env "$@"; }
 compose config --quiet
 # Explicitly scope every build and update to this Compose project.
-compose build web admin backend
+compose build web admin
+# Compose/Bake versions may fail to forward the host-network entitlement.
+# Use the direct build command already verified on this VPS for the shared image.
+docker build --network=host -f Dockerfile.backend -t "fmfilms-backend:$IMAGE_TAG" .
 # Dependency startup leaves current application containers serving during builds.
 compose up -d --wait --wait-timeout 120 postgres redis
 compose exec -T postgres pg_dump -U fmfilms -d fmfilms -Fc > ".deployment/backups/$IMAGE_TAG.dump"
