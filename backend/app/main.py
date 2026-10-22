@@ -288,3 +288,41 @@ def start_whatsapp_worker():
     worker_thread.start()
 
 
+@app.on_event("startup")
+def ensure_default_platform_super_admin():
+    from app.core.database import SessionLocal
+    from app.models.user import User
+    from app.core.security import hash_password
+    try:
+        with SessionLocal() as db:
+            admin_email = "admin@omniflow.io"
+            user = db.query(User).filter(User.email == admin_email).first()
+            if not user:
+                admin_user = User(
+                    email=admin_email,
+                    password_hash=hash_password("OmniflowAdmin2026!"),
+                    first_name="Platform",
+                    last_name="Admin",
+                    is_active=True,
+                    is_verified=True,
+                    is_platform_super_admin=True,
+                )
+                db.add(admin_user)
+                db.commit()
+                logger.info("Default platform super admin created: %s", admin_email)
+            else:
+                updated = False
+                if not getattr(user, "is_platform_super_admin", False):
+                    user.is_platform_super_admin = True
+                    updated = True
+                if not user.is_active:
+                    user.is_active = True
+                    updated = True
+                if updated:
+                    db.commit()
+                    logger.info("Platform super admin privileges ensured for: %s", admin_email)
+    except Exception as exc:
+        logger.warning("Could not auto-seed platform super admin: %s", exc)
+
+
+
