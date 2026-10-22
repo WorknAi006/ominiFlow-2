@@ -119,6 +119,8 @@ jobs:
           git rev-parse HEAD > .deployment/previous-git-commit
           git fetch origin main
           test "$(git rev-parse origin/main)" = "$1"
+          # Reject incoming tracked files that could overwrite private VPS state.
+          test -z "$(git ls-tree -r --name-only "$1" -- .env .deployment)"
           git reset --hard "$1"
           bash deploy/deploy.sh
           REMOTE

@@ -1,7 +1,20 @@
 FROM python:3.11-slim-bookworm AS build
+
+# Retry transient PyPI failures on the production VPS without changing pins.
+ENV PIP_DEFAULT_TIMEOUT=300 \
+    PIP_RETRIES=10 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
 WORKDIR /build
+
 COPY backend/requirements.txt ./
-RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
+
+RUN python -m pip wheel \
+    --no-cache-dir \
+    --wheel-dir /wheels \
+    --timeout 300 \
+    --retries 10 \
+    -r requirements.txt
 
 FROM python:3.11-slim-bookworm AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1

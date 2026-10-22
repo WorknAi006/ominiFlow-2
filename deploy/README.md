@@ -56,6 +56,10 @@ reach it for HTTPS. Do not change other domains, firewall rules or containers.
 
 ## First-time VPS setup
 
+The current production deployment is already live. For this server, configure
+the Actions secrets below and use normal pushes to `main`; do not rerun clone,
+bootstrap, environment generation or initial certificate issuance.
+
 Commit and push these repository changes to `main` before cloning. Run the
 following on Ubuntu, through SSH or the provider console. The repository and
 deployment scripts are administered as root. CI supports either root SSH or a
@@ -75,10 +79,10 @@ docker inspect lovenzea-gateway >/dev/null
 docker network inspect lovenzea_default >/dev/null
 docker exec lovenzea-gateway nginx -t
 
-# For a private repository, provision a read-only GitHub deploy key for root
-# and verify GitHub's host key before using this SSH clone URL.
+# The live server already pulls this HTTPS remote successfully; preserve it.
+# A new private checkout needs its own GitHub read authentication.
 # If /var/www/fmfilms already exists, inspect it first; never overwrite blindly.
-git clone --branch main git@github.com:WorknAi006/ominiFlow-2.git /var/www/fmfilms
+git clone --branch main https://github.com/WorknAi006/ominiFlow-2.git /var/www/fmfilms
 cd /var/www/fmfilms
 python3 deploy/init-env.py
 chmod 600 .env
@@ -91,6 +95,14 @@ bash deploy/deploy.sh --bootstrap
 ```
 
 Use a current Docker Compose v2 with `up --wait`, `--wait-timeout` and `--pull`.
+The backend build uses `build.network: host` because Docker bridge networking
+was unreliable for PyPI on this VPS. Its wheel download has a 300-second
+timeout and ten retries. Dependency pins, including SQLAlchemy and Alembic,
+are unchanged. This does not set runtime `network_mode: host`; all six workers
+continue sharing the single backend image. If a transient failure needs a
+fresh build, run `docker compose build --no-cache backend`, then retry the
+normal deployment. Do not change package versions to work around networking.
+
 The helper checks the gateway's network, running state and the exact mounts
 documented in the request. If the real server uses different mount source
 paths, it stops without making changes; inspect the mounts before adapting it.
@@ -199,12 +211,74 @@ Set these repository or `production` environment secrets in GitHub:
 | `VPS_SSH_KEY` | Dedicated private SSH key; matching public key belongs in VPS `authorized_keys` |
 | `VPS_KNOWN_HOSTS` | Verified OpenSSH host-key entries for this host and port |
 
-The VPS-to-GitHub read key is separate from the Actions-to-VPS login key.
+The live VPS uses its existing HTTPS GitHub remote and successful read
+authentication. Do not change that remote to SSH. The Actions-to-VPS login
+key authenticates a different connection and does not replace GitHub read access.
 Generate/provision keys privately, never commit them. Obtain the SSH host-key
 fingerprint from the VPS/provider console and verify it before saving
 `VPS_KNOWN_HOSTS`. For a nonstandard port, the known-host entry uses
 `[hostname]:PORT`. The workflow uses strict host-key checking and never accepts
 a host key merely because an unauthenticated network scan returned it.
+
+For this deployment, set `VPS_HOST` to the VPS IP, `VPS_USER` to `root` and
+`VPS_PORT` to `22`. Set `VPS_SSH_KEY` and `VPS_KNOWN_HOSTS` manually using the
+following steps. The workflow cannot configure these secrets for you.
+
+In Windows PowerShell, create a dedicated key outside the repository. At both
+passphrase prompts press Enter; the current noninteractive workflow does not
+support passphrase-protected private keys. Keep the private file private.
+
+```powershell
+$deployKey = Join-Path $env:USERPROFILE '.ssh/fmfilms-actions'
+if ((Test-Path -LiteralPath $deployKey) -or (Test-Path -LiteralPath "$deployKey.pub")) { throw 'Key path already exists; choose a new filename.' }
+New-Item -ItemType Directory -Force (Split-Path -Parent $deployKey) | Out-Null
+ssh-keygen -t ed25519 -C 'github-actions-fmfilms' -f $deployKey
+Get-Content -LiteralPath "$deployKey.pub"
+```
+
+Through your trusted VPS/provider console as root, append **only the public
+key** shown above. Replace the placeholder with that entire `ssh-ed25519 ...`
+line. Existing authorized keys are retained:
+
+```bash
+install -d -m 700 /root/.ssh
+touch /root/.ssh/authorized_keys
+chmod 600 /root/.ssh/authorized_keys
+public_key='PASTE_THE_SSH_ED25519_PUBLIC_KEY_LINE_HERE'
+[[ $public_key == ssh-ed25519\ * ]] || { echo 'Expected a public key' >&2; exit 1; }
+grep -qxF -- "$public_key" /root/.ssh/authorized_keys || printf '%s\n' "$public_key" >> /root/.ssh/authorized_keys
+```
+
+For `VPS_SSH_KEY`, copy the private file to your clipboard without printing it
+to a terminal, paste it into the GitHub Actions secret, then clear the clipboard:
+
+```powershell
+Get-Content -Raw -LiteralPath $deployKey | Set-Clipboard
+# Paste into GitHub secret VPS_SSH_KEY, then:
+Set-Clipboard -Value ''
+```
+
+For the safest known-host entry, obtain the server's ED25519 public host key
+through the trusted provider console, using the server's actual IPv4 address
+in place of `VPS_PUBLIC_IP`. This outputs the exact format for `VPS_KNOWN_HOSTS`:
+
+```bash
+awk '{print "VPS_PUBLIC_IP " $1 " " $2}' /etc/ssh/ssh_host_ed25519_key.pub
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
+```
+
+Alternatively scan from PowerShell, with the IP entered at the prompt:
+
+```powershell
+$vpsAddress = Read-Host 'VPS IPv4 address'
+$hostKeyFile = Join-Path $env:TEMP 'fmfilms-known-hosts'
+ssh-keyscan -T 10 -p 22 -t ed25519 $vpsAddress 2>$null | Set-Content -Encoding ascii -LiteralPath $hostKeyFile
+ssh-keygen -lf $hostKeyFile -E sha256
+```
+
+Compare that fingerprint with the trusted console fingerprint above before
+copying the scanned entry into GitHub. A network scan alone does not establish
+authenticity. After they match, use `Get-Content -LiteralPath $hostKeyFile`.
 
 After the initial setup:
 
@@ -221,16 +295,18 @@ Only then does it SSH into the VPS with the verified host key. It checks that
 instead of deploying unvalidated newer code.
 
 The root-owned `/var/www/fmfilms` checkout is reset to that commit. Its ignored
-`.env` and `.deployment` state are preserved; no `git clean` is used. The VPS
+`.env` and `.deployment` state are preserved; no `git clean` is used. The update
+rejects incoming commits that track either private path before reset. The VPS
 builds commit/time-tagged images while the current app remains available, backs
 up the gateway and database, runs migrations/seed, and replaces only FM Films
 services. Readiness failure fails the job and attempts to restart the previous
 images. The deployment never runs global pruning, `compose down`, volume
 deletion, or `--remove-orphans` against any project.
 
-The first setup, secrets and workflow must exist on GitHub before automatic
-deployment can run. This local implementation does not itself push commits,
-set GitHub secrets or prove access to the VPS.
+The initial server setup and Actions secrets must be in place before automatic
+deployment can run. Repository changes alone do not configure GitHub secrets
+or prove Actions-to-VPS access. Normal deployment does not request certificates;
+the existing renewal scripts and timer remain responsible for renewal.
 
 ## Verification and logs
 
