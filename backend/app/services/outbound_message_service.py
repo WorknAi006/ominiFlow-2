@@ -264,9 +264,12 @@ def send_message(
         message_text = data.body
         message_metadata = {
             "interactive": {
+                "interactive_type": getattr(data, "interactive_type", "button"),
+                "button_text": getattr(data, "button_text", None),
                 "header": data.header.model_dump(exclude_none=True) if data.header else None,
                 "footer": data.footer,
                 "buttons": [b.model_dump(exclude_none=True) for b in data.buttons],
+                "list_items": [item.model_dump(exclude_none=True) for item in getattr(data, "list_items", [])],
             }
         }
     elif isinstance(data, MediaMessageCreate):
@@ -350,6 +353,8 @@ def send_message(
                         credentials, phone_number_id, media_bytes, content_type, data.header.filename,
                     )
                     header_dict = {"type": data.header.type, "id": media_id, "filename": data.header.filename}
+                elif data.header.media_url:
+                    header_dict = {"type": data.header.type, "link": data.header.media_url, "filename": data.header.filename}
             external_id = provider.send_interactive_message(
                 credentials,
                 phone_number_id,
@@ -360,21 +365,36 @@ def send_message(
                 reply_buttons=[{"id": b.id, "title": b.title} for b in data.buttons if b.kind == "reply"],
                 url_buttons=[{"title": b.title, "url": b.url} for b in data.buttons if b.kind == "url" and b.url],
                 call_buttons=[{"title": b.title, "phone_number": b.phone_number} for b in data.buttons if b.kind == "call" and b.phone_number],
+                list_items=[{"id": i.id, "title": i.title, "description": i.description} for i in getattr(data, "list_items", [])],
+                button_text=getattr(data, "button_text", None),
             )
         elif isinstance(data, MediaMessageCreate):
-            media_bytes, content_type = _resolve_flow_media(tenant_id, data.media_key)
-            media_id = provider.upload_media(
-                credentials, phone_number_id, media_bytes, content_type, data.filename,
-            )
-            external_id = provider.send_media_message(
-                credentials,
-                phone_number_id,
-                recipient,
-                data.media_type,
-                media_id,
-                data.caption,
-                data.filename,
-            )
+            if data.media_key:
+                media_bytes, content_type = _resolve_flow_media(tenant_id, data.media_key)
+                media_id = provider.upload_media(
+                    credentials, phone_number_id, media_bytes, content_type, data.filename,
+                )
+                external_id = provider.send_media_message(
+                    credentials,
+                    phone_number_id,
+                    recipient,
+                    data.media_type,
+                    media_id=media_id,
+                    caption=data.caption,
+                    filename=data.filename,
+                )
+            elif data.media_url:
+                external_id = provider.send_media_message(
+                    credentials,
+                    phone_number_id,
+                    recipient,
+                    data.media_type,
+                    media_url=data.media_url,
+                    caption=data.caption,
+                    filename=data.filename,
+                )
+            else:
+                raise MediaUnavailableError("Neither media_key nor media_url was provided.")
         else:
             external_id = provider.send_text(
                 credentials,

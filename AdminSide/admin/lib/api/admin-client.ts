@@ -140,10 +140,19 @@ async function executeFetch<T>(
   if (response.status === 401) {
     setAdminToken(null);
     clearAdminApiCache();
+    let errorDetail = "Admin session has expired.";
+    try {
+      const errData = await response.json();
+      if (errData && errData.detail) {
+        errorDetail = typeof errData.detail === "string" ? errData.detail : JSON.stringify(errData.detail);
+      }
+    } catch {
+      // ignore
+    }
     if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login") && !window.location.pathname.startsWith("/admin/login")) {
       window.location.href = `/admin/login?reason=session_expired`;
     }
-    throw new AdminApiError(401, "Admin session has expired.");
+    throw new AdminApiError(401, errorDetail);
   }
 
   if (response.status === 403) {
@@ -207,7 +216,41 @@ export const adminApi = {
     return fetchAdmin<{ items: AdminTenantItem[]; total: number; page: number; page_size: number }>(`/tenants${qs}`);
   },
 
+  async createTenant(data: {
+    name: string;
+    slug?: string;
+    email?: string;
+    phone?: string;
+    description?: string;
+    owner_email: string;
+    owner_first_name: string;
+    owner_last_name?: string;
+    owner_password?: string;
+    owner_phone?: string;
+    plan?: string;
+    initial_credits?: number;
+    is_active?: boolean;
+  }): Promise<{
+    tenant: AdminTenantItem;
+    owner_user: AdminUser;
+    temporary_password: string | null;
+    initial_credits: number;
+    message: string;
+  }> {
+    return fetchAdmin<{
+      tenant: AdminTenantItem;
+      owner_user: AdminUser;
+      temporary_password: string | null;
+      initial_credits: number;
+      message: string;
+    }>("/tenants", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  },
+
   async getTenant(id: string): Promise<AdminTenantDetail> {
+
     return fetchAdmin<AdminTenantDetail>(`/tenants/${id}`);
   },
 

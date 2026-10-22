@@ -238,7 +238,7 @@ def process_pending(db: Session, limit: int = 50) -> dict[str, int]:
         except Exception as exc:  # Unexpected fault: mark failed, keep the worker alive.
             db.rollback()
             failed += 1
-            logger.error("keyword_delivery_failed", extra={"trigger_id": str(tid), "error_type": type(exc).__name__})
+            logger.exception("keyword_delivery_failed", extra={"trigger_id": str(tid), "error_type": type(exc).__name__})
             fresh = db.get(KeywordTrigger, tid)
             if fresh is not None and fresh.status == KeywordTriggerStatus.MATCHED.value:
                 fresh.status = KeywordTriggerStatus.FAILED.value

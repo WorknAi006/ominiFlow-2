@@ -6,6 +6,7 @@ from contextlib import contextmanager
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     HTTPException,
     Query,
@@ -190,10 +191,32 @@ async def _read_limited_body(request: Request) -> bytes:
     return bytes(body)
 
 
+def _process_whatsapp_events_background() -> None:
+    from app.core.database import SessionLocal
+    from app.services.whatsapp_event_processor import process_pending_events
+    from app.workers import flow_delivery
+
+    with SessionLocal() as session:
+        try:
+            counts = process_pending_events(session, limit=100)
+            if counts:
+                logger.info("Background WhatsApp events processed: %s", counts)
+        except Exception:
+            logger.exception("Failed to process WhatsApp events in background task.")
+
+    try:
+        flow_counts = flow_delivery.run_once(batch_size=50)
+        if flow_counts and any(flow_counts.values()):
+            logger.info("Background flow delivery processed: %s", flow_counts)
+    except Exception:
+        logger.exception("Failed to deliver flows in background task.")
+
+
 @router.post("/webhooks/whatsapp")
 async def receive_whatsapp_webhook(
     request: Request,
     db: DbSession,
+    background_tasks: BackgroundTasks,
 ):
     """
     Signature is verified against the raw body before anything is parsed.
@@ -232,6 +255,7 @@ async def receive_whatsapp_webhook(
 
     try:
         await run_in_threadpool(whatsapp_service.handle_webhook, db, payload)
+        background_tasks.add_task(run_in_threadpool, _process_whatsapp_events_background)
     except SQLAlchemyError as exc:
         # Type only: SQLAlchemy error text includes SQL parameters, i.e.
         # webhook payload content (customer data).

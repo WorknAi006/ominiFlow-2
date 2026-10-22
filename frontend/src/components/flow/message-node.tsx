@@ -138,6 +138,59 @@ export function MessageNode({ id, data, selected }: NodeProps) {
                 Save → {`{{${String(d.variable ?? "reply")}}}`}
               </div>
             </div>
+          ) : messageType === "external_api" ? (
+            <div className="rounded-lg bg-sky-50/70 border border-sky-100 p-2.5 text-xs text-sky-950 font-medium space-y-1">
+              <div className="flex items-center gap-1.5 font-bold">
+                <span className="rounded bg-sky-200 px-1.5 py-0.5 text-[10px] text-sky-800 uppercase">{String(d.apiMethod ?? "GET")}</span>
+                <span className="truncate flex-1">{String(d.apiUrl || "https://api.example.com")}</span>
+              </div>
+              {d.responseVariable ? (
+                <span className="text-[10px] text-sky-600 block">Saves to: <code>{`{{${String(d.responseVariable)}}}`}</code></span>
+              ) : null}
+            </div>
+          ) : messageType === "actions" ? (
+            <div className="rounded-lg bg-violet-50/70 border border-violet-100 p-2.5 text-xs text-violet-900 font-medium space-y-1">
+              <span className="font-bold flex items-center gap-1">⚙ Actions</span>
+              {Array.isArray(d.actions) && d.actions.length > 0 ? (
+                <ul className="list-disc list-inside text-[11px] text-violet-700">
+                  {(d.actions as { type?: string; config?: { value?: string; key?: string } }[]).slice(0, 3).map((a, i) => (
+                    <li key={i} className="truncate">{a.type?.replace("_", " ")}: {a.config?.value || a.config?.key || "configured"}</li>
+                  ))}
+                  {d.actions.length > 3 && <li>+{d.actions.length - 3} more...</li>}
+                </ul>
+              ) : (
+                <p className="text-[11px] italic text-violet-500">Click to configure actions</p>
+              )}
+            </div>
+          ) : messageType === "send_email" ? (
+            <div className="rounded-lg bg-rose-50/70 border border-rose-100 p-2.5 text-xs text-rose-900 font-medium space-y-1">
+              <div className="font-bold">✉ Send Email</div>
+              <div className="text-[11px] text-rose-700 truncate">To: {String(d.emailTo || "user@example.com")}</div>
+              {d.emailSubject ? <div className="text-[11px] text-rose-600 truncate">Subject: {String(d.emailSubject)}</div> : null}
+            </div>
+          ) : messageType === "razorpay" ? (
+            <div className="rounded-lg bg-emerald-50/80 border border-emerald-100 p-2.5 text-xs text-emerald-950 font-medium space-y-1">
+              <div className="flex items-center justify-between font-bold">
+                <span>💳 Razorpay Payment</span>
+                <span className="rounded bg-emerald-200 px-1.5 py-0.5 text-[10px] text-emerald-800">{String(d.currency ?? "INR")} {String(d.amount ?? 100)}</span>
+              </div>
+              <p className="text-[11px] text-emerald-700 truncate">{String(d.description || "Payment Request")}</p>
+            </div>
+          ) : messageType === "whatsapp_form" ? (
+            <div className="rounded-lg bg-teal-50/80 border border-teal-100 p-2.5 text-xs text-teal-950 font-medium space-y-1">
+              <span className="font-bold flex items-center gap-1">📋 WhatsApp Form</span>
+              <p className="text-[11px] text-teal-700 truncate">{String(d.formTitle || "Interactive Intake Form")}</p>
+            </div>
+          ) : messageType === "zoho_crm" ? (
+            <div className="rounded-lg bg-amber-50/80 border border-amber-100 p-2.5 text-xs text-amber-950 font-medium space-y-1">
+              <span className="font-bold flex items-center gap-1">👥 Zoho CRM Lead</span>
+              <p className="text-[11px] text-amber-700 truncate">Lead: {String(d.leadName || "{{contact_name}}")}</p>
+            </div>
+          ) : messageType === "carousel" ? (
+            <div className="rounded-lg bg-indigo-50/80 border border-indigo-100 p-2.5 text-xs text-indigo-950 font-medium space-y-1">
+              <span className="font-bold flex items-center gap-1">🎠 Carousel Template</span>
+              <p className="text-[11px] text-indigo-700 truncate">{String(d.templateName || "Select carousel template")}</p>
+            </div>
           ) : rawMsg ? (
             <p className="line-clamp-3 text-xs leading-relaxed text-slate-700 whitespace-pre-wrap">{rawMsg}</p>
           ) : (
@@ -164,7 +217,7 @@ export function MessageNode({ id, data, selected }: NodeProps) {
                     className="relative flex items-center justify-between rounded-lg border border-blue-100 bg-blue-50/40 px-3 py-1.5 text-xs font-semibold text-blue-700 shadow-2xs hover:bg-blue-50 transition"
                   >
                     <span className="truncate flex-1 pr-2">
-                      {b.title || `Button ${i + 1}`}
+                      {b.kind === "call" ? "📞 " : b.kind === "url" ? "🔗 " : ""}{b.title || `Button ${i + 1}`}
                       {!isReply && <span className="ml-1 text-[10px] text-blue-400 font-normal">({b.kind})</span>}
                     </span>
                     {isReply && (

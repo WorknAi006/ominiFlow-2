@@ -30,7 +30,7 @@ import {
   type TemplateSyncResult,
 } from "@/lib/channels/browser";
 
-type EmbeddedSignupResult = { phone_number_id: string; waba_id: string };
+type EmbeddedSignupResult = { phone_number_id?: string; waba_id?: string; code: string };
 type FacebookLoginResponse = { authResponse?: { code?: string } };
 
 declare global {
@@ -81,25 +81,31 @@ function ensureFacebookSdk(appId: string, version: string): Promise<NonNullable<
   });
 }
 
-function runEmbeddedSignup(configId: string, sdk: NonNullable<Window["FB"]>): Promise<EmbeddedSignupResult & { code: string }> {
+function runEmbeddedSignup(configId: string, sdk: NonNullable<Window["FB"]>): Promise<EmbeddedSignupResult> {
   return new Promise((resolve, reject) => {
     let code: string | null = null;
-    let assets: EmbeddedSignupResult | null = null;
+    let assets: { phone_number_id?: string; waba_id?: string } | null = null;
     let settled = false;
+    let fallbackTimer: number | null = null;
     const timeout = window.setTimeout(() => finish(new Error("WhatsApp setup timed out. Start again.")), 180000);
 
     function finish(error?: Error) {
       if (settled) return;
       settled = true;
       window.clearTimeout(timeout);
+      if (fallbackTimer !== null) window.clearTimeout(fallbackTimer);
       window.removeEventListener("message", onMessage);
-      if (error) reject(error);
-      else if (code && assets) resolve({ ...assets, code });
-      else reject(new Error("Meta did not return the WhatsApp account details. Start again."));
-    }
-
-    function maybeFinish() {
-      if (code && assets) finish();
+      if (error) {
+        reject(error);
+      } else if (code) {
+        resolve({
+          code,
+          phone_number_id: assets?.phone_number_id,
+          waba_id: assets?.waba_id,
+        });
+      } else {
+        reject(new Error("Meta sign-in did not return an authorization code."));
+      }
     }
 
     function onMessage(event: MessageEvent) {
@@ -109,7 +115,14 @@ function runEmbeddedSignup(configId: string, sdk: NonNullable<Window["FB"]>): Pr
       } catch {
         return;
       }
-      if (host !== "facebook.com" && !host.endsWith(".facebook.com")) return;
+      if (
+        host !== "facebook.com" &&
+        !host.endsWith(".facebook.com") &&
+        host !== "messenger.com" &&
+        !host.endsWith(".messenger.com")
+      ) {
+        return;
+      }
 
       let payload: unknown = event.data;
       if (typeof payload === "string") {
@@ -122,16 +135,22 @@ function runEmbeddedSignup(configId: string, sdk: NonNullable<Window["FB"]>): Pr
       if (!payload || typeof payload !== "object") return;
       const message = payload as { type?: unknown; event?: unknown; data?: unknown };
       if (message.type !== "WA_EMBEDDED_SIGNUP") return;
-      if (message.event === "CANCEL" || message.event === "ERROR") {
-        finish(new Error(message.event === "CANCEL" ? "WhatsApp setup was cancelled." : "Meta could not complete WhatsApp setup."));
+      if (message.event === "CANCEL") {
+        finish(new Error("WhatsApp setup was cancelled."));
         return;
       }
-      if (!message.data || typeof message.data !== "object") return;
-      const data = message.data as { phone_number_id?: unknown; waba_id?: unknown };
-      if (typeof data.phone_number_id === "string" && /^\d{1,32}$/.test(data.phone_number_id) &&
-          typeof data.waba_id === "string" && /^\d{1,32}$/.test(data.waba_id)) {
-        assets = { phone_number_id: data.phone_number_id, waba_id: data.waba_id };
-        maybeFinish();
+      if (message.event === "ERROR") {
+        finish(new Error("Meta could not complete WhatsApp setup."));
+        return;
+      }
+      if (message.data && typeof message.data === "object") {
+        const data = message.data as { phone_number_id?: unknown; waba_id?: unknown };
+        const phone = typeof data.phone_number_id === "string" && /^\d{1,32}$/.test(data.phone_number_id) ? data.phone_number_id : undefined;
+        const waba = typeof data.waba_id === "string" && /^\d{1,32}$/.test(data.waba_id) ? data.waba_id : undefined;
+        if (phone || waba) {
+          assets = { phone_number_id: phone, waba_id: waba };
+          if (code) finish();
+        }
       }
     }
 
@@ -143,7 +162,13 @@ function runEmbeddedSignup(configId: string, sdk: NonNullable<Window["FB"]>): Pr
         return;
       }
       code = authorizationCode;
-      maybeFinish();
+      if (assets?.phone_number_id && assets?.waba_id) {
+        finish();
+      } else {
+        fallbackTimer = window.setTimeout(() => {
+          finish();
+        }, 800);
+      }
     }, {
       config_id: configId,
       response_type: "code",
@@ -362,23 +387,27 @@ export function ChannelsClient() {
     }
   }
 
-  async function beginWhatsAppEmbeddedSignup() {
+  async function beginWhatsAppEmbeddedSignup(existingChannel?: ChannelConnection | null) {
     setEmbeddedSignupBusy(true);
     setNotice(null);
     try {
       const config = await getWhatsAppEmbeddedSignupConfig();
       const sdk = await ensureFacebookSdk(config.app_id, config.graph_api_version);
       const result = await runEmbeddedSignup(config.config_id, sdk);
-      const created = await createChannel({
-        channel_type: "whatsapp",
-        name: "WhatsApp Business",
-      });
-      await connectWhatsApp(created.id, {
-        phone_number_id: result.phone_number_id,
-        waba_id: result.waba_id,
+      let channelId = existingChannel?.id;
+      if (!channelId) {
+        const created = await createChannel({
+          channel_type: "whatsapp",
+          name: "WhatsApp Business",
+        });
+        channelId = created.id;
+      }
+      await connectWhatsApp(channelId, {
+        ...(result.phone_number_id ? { phone_number_id: result.phone_number_id } : {}),
+        ...(result.waba_id ? { waba_id: result.waba_id } : {}),
         code: result.code,
       });
-      setNotice({ kind: "success", text: "WhatsApp Business account connected." });
+      setNotice({ kind: "success", text: "WhatsApp Business account connected successfully." });
       await refresh();
     } catch (error) {
       handleError(error, error instanceof Error ? error.message : "Could not connect WhatsApp with Meta.");
@@ -805,7 +834,17 @@ export function ChannelsClient() {
           <strong>No channels yet</strong>
           <p>Connect your WhatsApp Business number, or add a Web Chat widget to your website, to start messaging.</p>
           <div className="flex flex-wrap justify-center gap-2">
-            <button type="button" className="channel-primary-btn" onClick={() => openConnect(null)}>Connect WhatsApp</button>
+            <button
+              type="button"
+              className="channel-primary-btn"
+              disabled={embeddedSignupBusy}
+              onClick={() => void beginWhatsAppEmbeddedSignup()}
+            >
+              <span aria-hidden="true">+</span> {embeddedSignupBusy ? "Connecting…" : "Connect WhatsApp"}
+            </button>
+            <button type="button" className="channel-secondary-btn" onClick={() => openConnect(null)}>
+              Manual setup
+            </button>
             <button type="button" className="channel-secondary-btn" disabled={creatingWebChat} onClick={() => void createWebChat()}>
               {creatingWebChat ? "Creating…" : "Create Web Chat"}
             </button>
@@ -942,8 +981,16 @@ export function ChannelsClient() {
                         <button type="button" className="channel-action" disabled={isBusy || !isWhatsApp} onClick={() => void runSync(channel)}>
                           Sync templates
                         </button>
+                        <button
+                          type="button"
+                          className="channel-action"
+                          disabled={isBusy || embeddedSignupBusy || !isWhatsApp}
+                          onClick={() => void beginWhatsAppEmbeddedSignup(channel)}
+                        >
+                          Reconnect with Meta
+                        </button>
                         <button type="button" className="channel-action" disabled={isBusy || !isWhatsApp} onClick={() => openConnect(channel)}>
-                          Reconnect
+                          Use a token
                         </button>
                         <button type="button" className="channel-action channel-action-danger" disabled={isBusy} onClick={() => setConfirmTarget(channel)}>
                           Disconnect
@@ -951,9 +998,19 @@ export function ChannelsClient() {
                       </>
                     )
                   ) : isWhatsApp ? (
-                    <button type="button" className="channel-action channel-action-primary" disabled={isBusy} onClick={() => openConnect(channel)}>
-                      {channel.status === "disconnected" || channel.status === "error" ? "Reconnect" : "Connect"}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="channel-action channel-action-primary"
+                        disabled={isBusy || embeddedSignupBusy}
+                        onClick={() => void beginWhatsAppEmbeddedSignup(channel)}
+                      >
+                        {embeddedSignupBusy ? "Connecting…" : channel.status === "disconnected" || channel.status === "error" ? "Reconnect with Meta" : "Connect with Meta"}
+                      </button>
+                      <button type="button" className="channel-action" disabled={isBusy || embeddedSignupBusy} onClick={() => openConnect(channel)}>
+                        Use a token
+                      </button>
+                    </>
                   ) : isFacebook ? (
                     <>
                       <button type="button" className="channel-action channel-action-primary" disabled={!!oauthStarting} onClick={() => void beginMetaOAuth("facebook")}>

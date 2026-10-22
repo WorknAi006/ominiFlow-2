@@ -251,11 +251,40 @@ async def database_health():
         result = connection.execute(
             text("SELECT current_database()")
         )
-
         database_name = result.scalar()
 
     return {
         "status": "ok",
         "database": database_name,
     }
-# trigger reload
+
+
+# =========================
+# BACKGROUND WORKERS
+# =========================
+
+def _whatsapp_worker_loop():
+    import time
+    from app.core.database import SessionLocal
+    from app.services.whatsapp_event_processor import process_pending_events
+    from app.workers import flow_delivery
+    while True:
+        try:
+            with SessionLocal() as db:
+                process_pending_events(db, limit=100)
+        except Exception:
+            pass
+        try:
+            flow_delivery.run_once(batch_size=50)
+        except Exception:
+            pass
+        time.sleep(2.0)
+
+
+@app.on_event("startup")
+def start_whatsapp_worker():
+    import threading
+    worker_thread = threading.Thread(target=_whatsapp_worker_loop, daemon=True, name="whatsapp-event-worker")
+    worker_thread.start()
+
+

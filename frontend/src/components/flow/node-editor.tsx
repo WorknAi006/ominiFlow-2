@@ -40,6 +40,17 @@ const HEADER_TYPES: { value: NonNullable<HeaderData["type"]>; label: string }[] 
 
 const newId = () => (crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : String(Date.now()));
 
+function TrashIcon({ className = "w-3.5 h-3.5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <line x1="10" y1="11" x2="10" y2="17" />
+      <line x1="14" y1="11" x2="14" y2="17" />
+    </svg>
+  );
+}
+
 export function NodeEditor({
   node, onChange, onClose, onDuplicate,
 }: {
@@ -126,7 +137,7 @@ export function NodeEditor({
   const currentTypeMeta = MESSAGE_TYPES.find((t) => t.value === messageType);
 
   return (
-    <aside className="flex h-full w-84 sm:w-96 flex-col border-r border-slate-200 bg-white shadow-xl z-10 transition-all animate-in slide-in-from-left duration-200">
+    <aside className="flex h-full w-88 sm:w-[420px] lg:w-[450px] flex-col border-r border-slate-200 bg-white shadow-xl z-10 transition-all animate-in slide-in-from-left duration-200">
       {/* Drawer Header */}
       <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3.5 bg-slate-50/50">
         <h3 className="text-base font-bold text-slate-900">
@@ -398,12 +409,33 @@ export function NodeEditor({
                 const kind = (b.kind ?? "reply") as ButtonKind;
                 const upd = (patch: Partial<ButtonOpt>) => setButtons(buttons.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
                 return (
-                  <div key={b.id || i} className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/50 p-3 shadow-2xs">
-                    <div className="flex items-center gap-2">
+                  <div key={b.id || i} className="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50/70 p-3 shadow-2xs">
+                    {/* Header with button number and clear Delete button */}
+                    <div className="flex items-center justify-between gap-2 border-b border-slate-200/60 pb-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600">
+                          Button {i + 1}
+                        </span>
+                        <span className="rounded bg-slate-200/80 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 capitalize">
+                          {kind === "reply" ? "Reply" : kind === "url" ? "URL" : "Call"}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setButtons(buttons.filter((_, idx) => idx !== i))}
+                        title={`Delete Button ${i + 1}`}
+                        className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:text-rose-700 transition shrink-0 cursor-pointer shadow-2xs"
+                      >
+                        <TrashIcon className="w-3.5 h-3.5" />
+                        <span>Delete</span>
+                      </button>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                       <select
                         value={kind}
                         onChange={(e) => upd({ kind: e.target.value as ButtonKind })}
-                        className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 outline-none"
+                        className="w-full sm:w-36 shrink-0 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 outline-none focus:border-blue-500 shadow-2xs"
                       >
                         {BUTTON_KINDS.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
                       </select>
@@ -411,32 +443,45 @@ export function NodeEditor({
                         value={b.title}
                         onChange={(e) => upd({ title: e.target.value })}
                         maxLength={20}
-                        placeholder={`Button ${i + 1} text`}
-                        className="flex-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium outline-none focus:border-blue-500"
+                        placeholder={`Button ${i + 1} text (e.g. Call us)`}
+                        className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium outline-none focus:border-blue-500"
                       />
-                      <button
-                        type="button"
-                        onClick={() => setButtons(buttons.filter((_, idx) => idx !== i))}
-                        className="rounded p-1 text-slate-400 hover:text-rose-600 transition"
-                      >
-                        🗑
-                      </button>
                     </div>
+
                     {kind === "url" && (
-                      <input
-                        value={String(b.url ?? "")}
-                        onChange={(e) => upd({ url: e.target.value })}
-                        placeholder="https://example.com"
-                        className="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs outline-none focus:border-blue-500"
-                      />
+                      <div className="space-y-1">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Website URL</label>
+                        <input
+                          value={String(b.url ?? "")}
+                          onChange={(e) => upd({ url: e.target.value })}
+                          onBlur={() => {
+                            const u = String(b.url ?? "").trim();
+                            if (u && !u.startsWith("http://") && !u.startsWith("https://")) {
+                              upd({ url: `https://${u}` });
+                            }
+                          }}
+                          placeholder="https://example.com"
+                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs outline-none focus:border-blue-500 font-mono text-slate-800"
+                        />
+                        <p className="text-[10px] text-slate-500">
+                          Renders in WhatsApp as native action button <code className="text-emerald-700 font-semibold">[ ↗ {b.title || "Visit"} ]</code>.
+                        </p>
+                      </div>
                     )}
+
                     {kind === "call" && (
-                      <input
-                        value={String(b.phoneNumber ?? "")}
-                        onChange={(e) => upd({ phoneNumber: e.target.value })}
-                        placeholder="+1 555 123 4567"
-                        className="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs outline-none focus:border-blue-500"
-                      />
+                      <div className="space-y-1">
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">Phone / Mobile Number</label>
+                        <input
+                          value={String(b.phoneNumber ?? "")}
+                          onChange={(e) => upd({ phoneNumber: e.target.value })}
+                          placeholder="+91 92090 81234 or 8433773656"
+                          className="w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs outline-none focus:border-blue-500 font-mono text-slate-800"
+                        />
+                        <p className="text-[10px] text-emerald-700 font-medium">
+                          ✓ Renders as <span className="font-bold">[ ↗ {b.title || "Call us"} ]</span>. Tapping it opens mobile phone&apos;s call log / dialer with this number.
+                        </p>
+                      </div>
                     )}
                   </div>
                 );
@@ -447,13 +492,13 @@ export function NodeEditor({
               <button
                 type="button"
                 onClick={() => setButtons([...buttons, { id: newId(), title: "", kind: "reply" }])}
-                className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl border border-dashed border-blue-300 bg-blue-50/40 text-xs font-bold text-blue-700 hover:bg-blue-50 transition"
+                className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-dashed border-blue-300 bg-blue-50/40 text-xs font-bold text-blue-700 hover:bg-blue-50 transition cursor-pointer"
               >
                 + Add Button
               </button>
             )}
-            <p className="text-[11px] text-slate-400">
-              Only <b>Custom (Reply)</b> buttons generate branch handles on the canvas. URL and Call buttons trigger external actions.
+            <p className="text-[11px] text-slate-500 leading-normal">
+              <b>Custom (Reply)</b> buttons generate branch handles on canvas. <b>Call Us</b> and <b>Visit website</b> render as WhatsApp native action buttons (e.g. <span className="font-semibold text-emerald-700">[ ↗ Call us ]</span>).
             </p>
           </div>
         )}
@@ -468,7 +513,7 @@ export function NodeEditor({
                 onChange={(e) => onChange({ listMenuButton: e.target.value })}
                 maxLength={20}
                 placeholder="e.g. Options or View Menu"
-                className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-sm outline-none focus:border-blue-500"
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-sm outline-none focus:border-blue-500 bg-white"
               />
             </div>
 
@@ -479,21 +524,35 @@ export function NodeEditor({
 
             <div className="space-y-2">
               {listItems.map((item, i) => (
-                <div key={item.id || i} className="flex items-center gap-2 rounded-xl border border-slate-200 p-2 bg-slate-50/50">
+                <div key={item.id || i} className="space-y-1.5 rounded-xl border border-slate-200 p-2.5 bg-slate-50/60 shadow-2xs">
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-slate-200/80 text-[10px] font-bold text-slate-600">
+                      {i + 1}
+                    </span>
+                    <input
+                      value={item.title}
+                      onChange={(e) => setListItems(listItems.map((x, idx) => (idx === i ? { ...x, title: e.target.value } : x)))}
+                      maxLength={24}
+                      placeholder={`Row ${i + 1} title (max 24)`}
+                      className="flex-1 min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium outline-none focus:border-blue-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setListItems(listItems.filter((_, idx) => idx !== i))}
+                      title={`Delete Row ${i + 1}`}
+                      className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:text-rose-700 transition shrink-0 cursor-pointer shadow-2xs"
+                    >
+                      <TrashIcon className="w-3.5 h-3.5" />
+                      <span>Delete</span>
+                    </button>
+                  </div>
                   <input
-                    value={item.title}
-                    onChange={(e) => setListItems(listItems.map((x, idx) => (idx === i ? { ...x, title: e.target.value } : x)))}
-                    maxLength={24}
-                    placeholder={`Row ${i + 1} title`}
-                    className="flex-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs outline-none focus:border-blue-500"
+                    value={item.description ?? ""}
+                    onChange={(e) => setListItems(listItems.map((x, idx) => (idx === i ? { ...x, description: e.target.value } : x)))}
+                    maxLength={72}
+                    placeholder="Optional subtext description (max 72)"
+                    className="w-full rounded-lg border border-slate-200 bg-white/80 px-2.5 py-1 text-[11px] text-slate-600 outline-none focus:border-blue-500"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setListItems(listItems.filter((_, idx) => idx !== i))}
-                    className="rounded p-1 text-slate-400 hover:text-rose-600 transition"
-                  >
-                    🗑
-                  </button>
                 </div>
               ))}
             </div>
@@ -502,7 +561,7 @@ export function NodeEditor({
               <button
                 type="button"
                 onClick={() => setListItems([...listItems, { id: newId(), title: "" }])}
-                className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl border border-dashed border-slate-300 text-xs font-bold text-slate-700 hover:bg-slate-50 transition"
+                className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl border border-dashed border-slate-300 text-xs font-bold text-slate-700 hover:bg-slate-50 transition cursor-pointer"
               >
                 + Add Row
               </button>
@@ -641,6 +700,354 @@ export function NodeEditor({
                 Sends <b>{String(d.templateName)}</b> ({String(d.templateLanguage ?? "en_US")}).
               </p>
             ) : null}
+          </div>
+        )}
+
+        {/* External API Node Configuration */}
+        {messageType === "external_api" && (
+          <div className="space-y-3 pt-2 border-t border-slate-100">
+            <div className="grid grid-cols-3 gap-2">
+              <label className="col-span-1">
+                <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Method</span>
+                <select
+                  value={String(d.apiMethod ?? "GET")}
+                  onChange={(e) => onChange({ apiMethod: e.target.value })}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold outline-none focus:border-blue-500"
+                >
+                  <option value="GET">GET</option>
+                  <option value="POST">POST</option>
+                  <option value="PUT">PUT</option>
+                  <option value="DELETE">DELETE</option>
+                </select>
+              </label>
+              <label className="col-span-2">
+                <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Endpoint URL</span>
+                <input
+                  value={String(d.apiUrl ?? "")}
+                  onChange={(e) => onChange({ apiUrl: e.target.value })}
+                  placeholder="https://api.example.com/orders"
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs outline-none focus:border-blue-500"
+                />
+              </label>
+            </div>
+
+            {["POST", "PUT", "PATCH"].includes(String(d.apiMethod ?? "GET")) && (
+              <label className="block">
+                <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Request Body (JSON)</span>
+                <textarea
+                  value={String(d.apiBody ?? "")}
+                  onChange={(e) => onChange({ apiBody: e.target.value })}
+                  rows={3}
+                  placeholder='{"phone": "{{contact_phone}}"}'
+                  className="w-full rounded-xl border border-slate-200 p-2.5 text-xs font-mono outline-none focus:border-blue-500"
+                />
+              </label>
+            )}
+
+            <label className="block">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Save Response to Variable</span>
+              <input
+                value={String(d.responseVariable ?? "")}
+                onChange={(e) => onChange({ responseVariable: e.target.value })}
+                placeholder="e.g. order_info"
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs outline-none focus:border-blue-500"
+              />
+              <span className="text-[11px] text-slate-400 mt-1 block">
+                Use JSON fields later as {`{{${String(d.responseVariable || "var")}_key}}`}
+              </span>
+            </label>
+          </div>
+        )}
+
+        {/* Actions Node Configuration */}
+        {messageType === "actions" && (
+          <div className="space-y-3 pt-2 border-t border-slate-100">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">Contact & Chat Actions</label>
+            </div>
+
+            <div className="space-y-2">
+              {((d.actions as { type: string; config?: Record<string, string> }[] | undefined) ?? []).map((act, idx) => (
+                <div key={idx} className="p-2.5 rounded-xl border border-slate-200 bg-slate-50/60 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <select
+                      value={act.type}
+                      onChange={(e) => {
+                        const cur = [...((d.actions as { type: string; config?: Record<string, string> }[]) ?? [])];
+                        cur[idx] = { ...cur[idx], type: e.target.value };
+                        onChange({ actions: cur });
+                      }}
+                      className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold"
+                    >
+                      <option value="add_tags">Add Tag(s)</option>
+                      <option value="remove_tags">Remove Tag(s)</option>
+                      <option value="set_custom_field">Set Custom Field</option>
+                      <option value="set_chat_status">Set Chat Status</option>
+                      <option value="transfer_to_bot">Transfer to Bot</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const cur = [...((d.actions as { type: string; config?: Record<string, string> }[]) ?? [])];
+                        cur.splice(idx, 1);
+                        onChange({ actions: cur });
+                      }}
+                      title="Delete action"
+                      className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-bold text-rose-600 hover:bg-rose-100 hover:text-rose-700 transition shrink-0 cursor-pointer shadow-2xs"
+                    >
+                      <TrashIcon className="w-3.5 h-3.5" />
+                      <span>Delete</span>
+                    </button>
+                  </div>
+
+                  {["add_tags", "remove_tags"].includes(act.type) && (
+                    <input
+                      value={act.config?.value ?? ""}
+                      onChange={(e) => {
+                        const cur = [...((d.actions as { type: string; config?: Record<string, string> }[]) ?? [])];
+                        cur[idx] = { ...cur[idx], config: { ...cur[idx].config, value: e.target.value } };
+                        onChange({ actions: cur });
+                      }}
+                      placeholder="e.g. VIP, Interested (comma-separated)"
+                      className="w-full rounded-lg border border-slate-300 px-2.5 py-1 text-xs outline-none focus:border-blue-500"
+                    />
+                  )}
+
+                  {act.type === "set_custom_field" && (
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <input
+                        value={act.config?.key ?? ""}
+                        onChange={(e) => {
+                          const cur = [...((d.actions as { type: string; config?: Record<string, string> }[]) ?? [])];
+                          cur[idx] = { ...cur[idx], config: { ...cur[idx].config, key: e.target.value } };
+                          onChange({ actions: cur });
+                        }}
+                        placeholder="Field key"
+                        className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                      />
+                      <input
+                        value={act.config?.value ?? ""}
+                        onChange={(e) => {
+                          const cur = [...((d.actions as { type: string; config?: Record<string, string> }[]) ?? [])];
+                          cur[idx] = { ...cur[idx], config: { ...cur[idx].config, value: e.target.value } };
+                          onChange({ actions: cur });
+                        }}
+                        placeholder="Value"
+                        className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                      />
+                    </div>
+                  )}
+
+                  {act.type === "set_chat_status" && (
+                    <select
+                      value={act.config?.value ?? "open"}
+                      onChange={(e) => {
+                        const cur = [...((d.actions as { type: string; config?: Record<string, string> }[]) ?? [])];
+                        cur[idx] = { ...cur[idx], config: { ...cur[idx].config, value: e.target.value } };
+                        onChange({ actions: cur });
+                      }}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-medium"
+                    >
+                      <option value="open">Open</option>
+                      <option value="pending">Pending</option>
+                      <option value="closed">Closed</option>
+                      <option value="snoozed">Snoozed</option>
+                    </select>
+                  )}
+                </div>
+              ))}
+
+              <button
+                type="button"
+                onClick={() => {
+                  const cur = [...((d.actions as { type: string; config?: Record<string, string> }[]) ?? [])];
+                  cur.push({ type: "add_tags", config: { value: "" } });
+                  onChange({ actions: cur });
+                }}
+                className="w-full py-2 rounded-xl border border-dashed border-slate-300 text-xs font-bold text-slate-700 hover:bg-slate-50 transition"
+              >
+                + Add Action
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Send Email Node Configuration */}
+        {messageType === "send_email" && (
+          <div className="space-y-3 pt-2 border-t border-slate-100">
+            <label className="block">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Recipient Email</span>
+              <input
+                type="email"
+                value={String(d.emailTo ?? "")}
+                onChange={(e) => onChange({ emailTo: e.target.value })}
+                placeholder="agent@company.com or {{user_email}}"
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs outline-none focus:border-blue-500"
+              />
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Subject</span>
+              <input
+                value={String(d.emailSubject ?? "")}
+                onChange={(e) => onChange({ emailSubject: e.target.value })}
+                placeholder="Inquiry from {{contact_name}}"
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs outline-none focus:border-blue-500"
+              />
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Email Body</span>
+              <textarea
+                value={String(d.message ?? "")}
+                onChange={(e) => onChange({ message: e.target.value })}
+                rows={3}
+                placeholder="Lead details: {{contact_name}} - {{contact_phone}}"
+                className="w-full rounded-xl border border-slate-200 p-2.5 text-xs outline-none focus:border-blue-500"
+              />
+            </label>
+          </div>
+        )}
+
+        {/* Razorpay Payment Node Configuration */}
+        {messageType === "razorpay" && (
+          <div className="space-y-3 pt-2 border-t border-slate-100">
+            <div className="grid grid-cols-3 gap-2">
+              <label className="col-span-2">
+                <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Amount</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={Number(d.amount ?? 100)}
+                  onChange={(e) => onChange({ amount: Number(e.target.value) })}
+                  className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs outline-none focus:border-blue-500"
+                />
+              </label>
+              <label className="col-span-1">
+                <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Currency</span>
+                <select
+                  value={String(d.currency ?? "INR")}
+                  onChange={(e) => onChange({ currency: e.target.value })}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-bold outline-none focus:border-blue-500"
+                >
+                  <option value="INR">INR (₹)</option>
+                  <option value="USD">USD ($)</option>
+                  <option value="EUR">EUR (€)</option>
+                </select>
+              </label>
+            </div>
+            <label className="block">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Payment Description</span>
+              <input
+                value={String(d.description ?? "")}
+                onChange={(e) => onChange({ description: e.target.value })}
+                placeholder="e.g. Order #1234 Consultation"
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs outline-none focus:border-blue-500"
+              />
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Direct Payment / Checkout Link</span>
+              <input
+                type="url"
+                value={String(d.paymentUrl ?? "")}
+                onChange={(e) => onChange({ paymentUrl: e.target.value })}
+                placeholder="https://rzp.io/l/your-link"
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs outline-none focus:border-blue-500"
+              />
+            </label>
+          </div>
+        )}
+
+        {/* WhatsApp Form Node Configuration */}
+        {messageType === "whatsapp_form" && (
+          <div className="space-y-3 pt-2 border-t border-slate-100">
+            <label className="block">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Form Display Title</span>
+              <input
+                value={String(d.formTitle ?? "")}
+                onChange={(e) => onChange({ formTitle: e.target.value })}
+                placeholder="e.g. Customer Feedback"
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs outline-none focus:border-blue-500"
+              />
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Form ID (from Meta / WhatsApp Forms)</span>
+              <input
+                value={String(d.formId ?? "")}
+                onChange={(e) => onChange({ formId: e.target.value })}
+                placeholder="e.g. 1029384756"
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs outline-none focus:border-blue-500"
+              />
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Message / Prompt</span>
+              <textarea
+                value={String(d.message ?? "")}
+                onChange={(e) => onChange({ message: e.target.value })}
+                rows={3}
+                placeholder="Please tap below to fill out your details:"
+                className="w-full rounded-xl border border-slate-200 p-2.5 text-xs outline-none focus:border-blue-500"
+              />
+            </label>
+          </div>
+        )}
+
+        {/* Zoho CRM Lead Configuration */}
+        {messageType === "zoho_crm" && (
+          <div className="space-y-3 pt-2 border-t border-slate-100">
+            <label className="block">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Lead Name</span>
+              <input
+                value={String(d.leadName ?? "{{contact_name}}")}
+                onChange={(e) => onChange({ leadName: e.target.value })}
+                placeholder="{{contact_name}}"
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs outline-none focus:border-blue-500"
+              />
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Lead Phone</span>
+              <input
+                value={String(d.leadPhone ?? "{{contact_phone}}")}
+                onChange={(e) => onChange({ leadPhone: e.target.value })}
+                placeholder="{{contact_phone}}"
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs outline-none focus:border-blue-500"
+              />
+            </label>
+            <label className="block">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Lead Email</span>
+              <input
+                value={String(d.leadEmail ?? "{{user_email}}")}
+                onChange={(e) => onChange({ leadEmail: e.target.value })}
+                placeholder="{{user_email}}"
+                className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs outline-none focus:border-blue-500"
+              />
+            </label>
+          </div>
+        )}
+
+        {/* Carousel Template Configuration */}
+        {messageType === "carousel" && (
+          <div className="space-y-3 pt-2 border-t border-slate-100">
+            <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">Approved Carousel Template</label>
+            {templates.length === 0 ? (
+              <p className="text-xs text-slate-500 border border-dashed border-slate-200 rounded-xl p-4 text-center">
+                No synced templates found.
+              </p>
+            ) : (
+              <select
+                value={String(d.templateName ?? "")}
+                onChange={(e) => {
+                  const t = templates.find((x) => x.name === e.target.value);
+                  onChange({ templateName: t?.name ?? "", templateLanguage: t?.language ?? "en_US" });
+                }}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-medium outline-none focus:border-blue-500"
+              >
+                <option value="">Select an approved carousel template</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.name}>
+                    {t.name} · {t.language}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
         )}
       </div>

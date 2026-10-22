@@ -18,6 +18,8 @@ from app.schemas.admin import (
     AdminAuthResponse,
     AdminChannelListResponse,
     AdminConversationListResponse,
+    AdminCreateTenantRequest,
+    AdminCreateTenantResponse,
     AdminCreateUserRequest,
     AdminDashboardStats,
     AdminLoginRequest,
@@ -35,6 +37,7 @@ from app.schemas.admin import (
 from app.services.admin_service import (
     AdminAuthenticationError,
     authenticate_platform_admin,
+    create_admin_tenant,
     create_admin_user,
     delete_admin_tenant,
     delete_admin_user,
@@ -119,7 +122,20 @@ def list_tenants(
     return get_admin_tenants(db, page=page, page_size=page_size, search=search, status_filter=status)
 
 
+@router.post("/tenants", response_model=AdminCreateTenantResponse, status_code=status.HTTP_201_CREATED)
+def create_tenant(
+    data: AdminCreateTenantRequest,
+    admin: CurrentPlatformAdmin,
+    db: DbSession,
+):
+    try:
+        return create_admin_tenant(db, data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/tenants/{tenant_id}", response_model=AdminTenantDetail)
+
 def get_tenant_detail(
     tenant_id: uuid.UUID,
     admin: CurrentPlatformAdmin,

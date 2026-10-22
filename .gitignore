@@ -18,3 +18,15 @@ backend/var/
 
 AdminSide/.env
 AdminSide/**/.env
+<<<<<<< HEAD
+=======
+.cache/
+.deployment/
+
+# VPS production backups
+Dockerfile.backend.backup.*
+docker-compose.yml.backup.*
+.env.backup.*
+.env.edited.*
+.env.before-repair.*
+>>>>>>> 63d65d07564028eb042a79fb6385b6013435d055

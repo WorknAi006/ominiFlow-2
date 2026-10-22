@@ -94,6 +94,7 @@ class InteractiveHeader(BaseModel):
     text: str | None = Field(default=None, max_length=MAX_HEADER_TEXT_LENGTH)
     # Storage key of a flow-uploaded asset (image/video/document headers).
     media_key: str | None = None
+    media_url: str | None = None
     filename: str | None = Field(default=None, max_length=255)
 
     model_config = ConfigDict(extra="forbid")
@@ -112,12 +113,25 @@ class InteractiveButton(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class InteractiveListItem(BaseModel):
+    """A row in a WhatsApp interactive list message."""
+
+    id: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=24)
+    description: str | None = Field(default=None, max_length=72)
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class InteractiveMessageCreate(BaseModel):
     type: Literal["interactive"]
     body: str = Field(min_length=1, max_length=MAX_BODY_LENGTH)
     header: InteractiveHeader | None = None
     footer: str | None = Field(default=None, max_length=MAX_FOOTER_LENGTH)
     buttons: list[InteractiveButton] = Field(default_factory=list, max_length=10)
+    interactive_type: Literal["button", "list"] = "button"
+    button_text: str | None = Field(default=None, max_length=20)
+    list_items: list[InteractiveListItem] = Field(default_factory=list, max_length=10)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -125,8 +139,9 @@ class InteractiveMessageCreate(BaseModel):
 class MediaMessageCreate(BaseModel):
     type: Literal["media"]
     media_type: Literal["image", "video", "audio", "document"]
-    # Storage key of a flow-uploaded asset.
-    media_key: str = Field(min_length=1)
+    # Storage key of a flow-uploaded asset OR public URL.
+    media_key: str | None = None
+    media_url: str | None = None
     caption: str | None = Field(default=None, max_length=MAX_BODY_LENGTH)
     filename: str | None = Field(default=None, max_length=255)
 

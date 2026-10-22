@@ -22,6 +22,112 @@ function sanitizeEdges(edges: Edge[]) {
   return edges.map((e) => ({ id: e.id, source: e.source, target: e.target, sourceHandle: e.sourceHandle ?? null, targetHandle: e.targetHandle ?? null }));
 }
 
+function validateFlow(nodes: Node[], edges: Edge[]): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  if (nodes.length === 0) {
+    return { valid: false, errors: ["Flow has no nodes. Please add at least one node."] };
+  }
+
+  const nodeMap = new Map<string, Node>();
+  for (const n of nodes) nodeMap.set(n.id, n);
+
+  for (const edge of edges) {
+    if (!nodeMap.has(edge.source)) errors.push(`Edge connects from nonexistent node (${edge.source})`);
+    if (!nodeMap.has(edge.target)) errors.push(`Edge connects to nonexistent node (${edge.target})`);
+  }
+
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i];
+    const d = (n.data || {}) as Record<string, unknown>;
+    const mt = String(d.messageType || "text");
+    const label = String(d.label || `Node ${i + 1}`);
+
+    if (mt === "text") {
+      if (!String(d.message || "").trim()) {
+        errors.push(`${label}: Text message body cannot be empty.`);
+      }
+    } else if (["image", "video", "audio", "document"].includes(mt)) {
+      if (!d.mediaUrl && !d.mediaKey) {
+        errors.push(`${label}: Please upload a file or paste a media URL.`);
+      }
+    } else if (mt === "button") {
+      if (!String(d.message || "").trim()) {
+        errors.push(`${label}: Button message body cannot be empty.`);
+      }
+      const buttons = (d.buttons as { id?: string; title?: string; kind?: string; url?: string; phoneNumber?: string }[] | undefined) ?? [];
+      if (buttons.length === 0) {
+        errors.push(`${label}: At least one button is required.`);
+      } else {
+        buttons.forEach((b, bIdx) => {
+          if (!String(b.title || "").trim()) {
+            errors.push(`${label}: Button ${bIdx + 1} text is required.`);
+          }
+          if (b.kind === "url") {
+            const u = String(b.url || "").trim();
+            if (!u) {
+              errors.push(`${label}: Button "${b.title || bIdx + 1}" requires a website URL.`);
+            }
+          }
+          if (b.kind === "call") {
+            const p = String(b.phoneNumber || "").trim();
+            if (!p) {
+              errors.push(`${label}: Button "${b.title || bIdx + 1}" requires a phone number.`);
+            }
+          }
+        });
+      }
+    } else if (mt === "list") {
+      if (!String(d.message || "").trim()) {
+        errors.push(`${label}: List message body cannot be empty.`);
+      }
+      if (!String(d.listMenuButton || "").trim()) {
+        errors.push(`${label}: List Menu Button text is required.`);
+      }
+      const items = (d.listItems as { id?: string; title?: string }[] | undefined) ?? [];
+      if (items.length === 0) {
+        errors.push(`${label}: List must have at least one row option.`);
+      } else {
+        items.forEach((it, itIdx) => {
+          if (!String(it.title || "").trim()) {
+            errors.push(`${label}: List row ${itIdx + 1} title is required.`);
+          }
+        });
+      }
+    } else if (mt === "get_user_data") {
+      if (!String(d.variable || "").trim()) {
+        errors.push(`${label}: Variable name to save reply into is required.`);
+      }
+    } else if (mt === "template") {
+      if (!String(d.templateName || "").trim()) {
+        errors.push(`${label}: Please select an approved template.`);
+      }
+    } else if (mt === "external_api") {
+      const u = String(d.apiUrl || "").trim();
+      if (!u || (!u.startsWith("http://") && !u.startsWith("https://"))) {
+        errors.push(`${label}: Valid HTTP/HTTPS API endpoint URL is required.`);
+      }
+    } else if (mt === "send_email") {
+      if (!String(d.emailTo || "").trim()) {
+        errors.push(`${label}: Recipient email address is required.`);
+      }
+    } else if (mt === "razorpay") {
+      if (Number(d.amount ?? 0) <= 0) {
+        errors.push(`${label}: Valid payment amount is required.`);
+      }
+    } else if (mt === "whatsapp_form") {
+      if (!String(d.formId || "").trim()) {
+        errors.push(`${label}: Form ID is required.`);
+      }
+    } else if (mt === "carousel") {
+      if (!String(d.templateName || "").trim()) {
+        errors.push(`${label}: Please select an approved carousel template.`);
+      }
+    }
+  }
+
+  return { valid: errors.length === 0, errors };
+}
+
 function BuilderInner({ flowId }: { flowId: string }) {
   const router = useRouter();
   const { zoomIn, zoomOut, fitView } = useReactFlow();
@@ -119,6 +225,15 @@ function BuilderInner({ flowId }: { flowId: string }) {
     } else if (messageType === "delay") {
       initialData.delayValue = 5;
       initialData.delayUnit = "minutes";
+    } else if (messageType === "external_api") {
+      initialData.apiMethod = "GET";
+      initialData.apiUrl = "https://";
+      initialData.responseVariable = "api_data";
+    } else if (messageType === "actions") {
+      initialData.actions = [{ type: "add_tags", config: { value: "Lead" } }];
+    } else if (messageType === "send_email") {
+      initialData.emailTo = "";
+      initialData.emailSubject = "Notification";
     }
 
     const node: Node = {
@@ -136,7 +251,31 @@ function BuilderInner({ flowId }: { flowId: string }) {
     if (!selectedId) return;
     snapshot();
     setNodes((nds) => nds.map((n) => (n.id === selectedId ? { ...n, data: { ...n.data, ...patch } } : n)));
-  }, [selectedId, snapshot, setNodes]);
+    if (patch.buttons && Array.isArray(patch.buttons)) {
+      const activeBtnHandles = new Set(
+        (patch.buttons as { id?: string }[]).map((b) => `btn:${b.id}`)
+      );
+      setEdges((eds) =>
+        eds.filter((e) => {
+          if (e.source !== selectedId) return true;
+          if (!e.sourceHandle || !e.sourceHandle.startsWith("btn:")) return true;
+          return activeBtnHandles.has(e.sourceHandle);
+        })
+      );
+    }
+    if (patch.listItems && Array.isArray(patch.listItems)) {
+      const activeItemHandles = new Set(
+        (patch.listItems as { id?: string }[]).map((it) => `item:${it.id}`)
+      );
+      setEdges((eds) =>
+        eds.filter((e) => {
+          if (e.source !== selectedId) return true;
+          if (!e.sourceHandle || !e.sourceHandle.startsWith("item:")) return true;
+          return activeItemHandles.has(e.sourceHandle);
+        })
+      );
+    }
+  }, [selectedId, snapshot, setNodes, setEdges]);
 
   // Assisted Auto-Layout: arranges nodes topologically in clean columns
   const autoLayout = useCallback(() => {
@@ -241,6 +380,16 @@ function BuilderInner({ flowId }: { flowId: string }) {
 
   async function toggleStatus() {
     const next = status === "active" ? "draft" : "active";
+    if (next === "active") {
+      const check = validateFlow(nodesRef.current, edgesRef.current);
+      if (!check.valid) {
+        setError(`Flow cannot be activated: ${check.errors[0]}`);
+        setToast("Please fix validation errors first");
+        setTimeout(() => setToast(""), 3000);
+        return;
+      }
+    }
+    setError("");
     try {
       await flowsApi.update(flowId, { status: next });
       setStatus(next);

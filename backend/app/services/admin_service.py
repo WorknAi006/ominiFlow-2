@@ -1,3 +1,4 @@
+import secrets
 import time
 import uuid
 from datetime import datetime, timezone
@@ -11,16 +12,20 @@ from app.core.security import hash_password, verify_password
 from app.models import (
     Automation,
     ChannelConnection,
+    ChannelStatus,
     Contact,
     Conversation,
     Message,
     Role,
     TeamInvitation,
     Tenant,
+    TenantAiCredit,
     TenantMembership,
     User,
     WhatsAppEvent,
 )
+from app.services.auth_service import generate_slug
+
 
 
 class AdminAuthenticationError(Exception):
@@ -140,8 +145,139 @@ def get_admin_tenants(
     }
 
 
+def create_admin_tenant(db: Session, data: Any) -> dict[str, Any]:
+    # 1. Validate OWNER role exists
+    owner_role = (
+        db.query(Role)
+        .filter(Role.name == "OWNER", Role.is_active.is_(True))
+        .first()
+    )
+    if not owner_role:
+        raise ValueError("OWNER role is not configured in the system.")
+
+    # 2. Derive unique slug
+    raw_slug = data.slug.strip() if getattr(data, "slug", None) else data.name.strip()
+    base_slug = generate_slug(raw_slug)
+    slug = base_slug
+    suffix = 1
+    while db.query(Tenant).filter(Tenant.slug == slug).first():
+        suffix += 1
+        slug = f"{base_slug[:90]}-{suffix}"
+
+    # 3. Handle Owner User securely
+    owner_email = str(data.owner_email).strip().lower()
+    owner_user = db.query(User).filter(func.lower(User.email) == owner_email).first()
+    temporary_password = None
+
+    if owner_user:
+        # Existing user account: associate with new tenant
+        # Never grant super admin rights
+        if not owner_user.is_active:
+            owner_user.is_active = True
+    else:
+        # New user account
+        if getattr(data, "owner_password", None):
+            raw_password = data.owner_password
+        else:
+            raw_password = f"Omni_{secrets.token_urlsafe(8)}!"
+            temporary_password = raw_password
+
+        owner_user = User(
+            email=owner_email,
+            password_hash=hash_password(raw_password),
+            first_name=data.owner_first_name.strip(),
+            last_name=data.owner_last_name.strip() if getattr(data, "owner_last_name", None) else None,
+            is_active=True,
+            is_verified=True,
+            is_platform_super_admin=False,
+        )
+        db.add(owner_user)
+        db.flush()
+
+    # 4. Create Tenant
+    tenant_email = str(data.email).strip().lower() if getattr(data, "email", None) else owner_email
+    tenant_phone = data.phone.strip() if getattr(data, "phone", None) else (data.owner_phone.strip() if getattr(data, "owner_phone", None) else None)
+    tenant = Tenant(
+        name=data.name.strip(),
+        slug=slug,
+        email=tenant_email,
+        phone=tenant_phone,
+        description=data.description.strip() if getattr(data, "description", None) else None,
+        is_active=bool(data.is_active),
+        is_deleted=False,
+    )
+    db.add(tenant)
+    db.flush()
+
+    # 5. Create OWNER Membership
+    existing_membership = db.query(TenantMembership).filter(
+        TenantMembership.tenant_id == tenant.id,
+        TenantMembership.user_id == owner_user.id,
+    ).first()
+
+    if not existing_membership:
+        membership = TenantMembership(
+            tenant_id=tenant.id,
+            user_id=owner_user.id,
+            role_id=owner_role.id,
+            status="active" if data.is_active else "suspended",
+        )
+        db.add(membership)
+
+    # 6. Initialize AI Credit Balance
+    initial_credits = max(0.0, float(getattr(data, "initial_credits", 500.0)))
+    credit_record = db.query(TenantAiCredit).filter(TenantAiCredit.tenant_id == tenant.id).first()
+    if not credit_record:
+        credit_record = TenantAiCredit(
+            tenant_id=tenant.id,
+            balance=initial_credits,
+        )
+        db.add(credit_record)
+
+    # 7. Commit transaction
+    try:
+        db.commit()
+        db.refresh(tenant)
+        db.refresh(owner_user)
+    except Exception as exc:
+        db.rollback()
+        raise ValueError(f"Failed to create tenant: {exc}")
+
+    return {
+        "tenant": {
+            "id": tenant.id,
+            "name": tenant.name,
+            "slug": tenant.slug,
+            "email": tenant.email,
+            "phone": tenant.phone,
+            "is_active": tenant.is_active,
+            "is_deleted": tenant.is_deleted,
+            "user_count": 1,
+            "channel_count": 0,
+            "conversation_count": 0,
+            "plan": getattr(data, "plan", "Standard") or "Standard",
+            "created_at": tenant.created_at,
+            "updated_at": tenant.updated_at,
+        },
+        "owner_user": {
+            "id": owner_user.id,
+            "email": owner_user.email,
+            "first_name": owner_user.first_name,
+            "last_name": owner_user.last_name,
+            "is_active": owner_user.is_active,
+            "is_verified": owner_user.is_verified,
+            "is_platform_admin": getattr(owner_user, "is_platform_admin", False),
+            "created_at": owner_user.created_at,
+        },
+        "temporary_password": temporary_password,
+        "initial_credits": initial_credits,
+        "message": f"Tenant '{tenant.name}' created and activated successfully.",
+    }
+
+
 def get_admin_tenant_detail(db: Session, tenant_id: uuid.UUID) -> dict[str, Any] | None:
     t = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+
     if not t:
         return None
 
@@ -199,6 +335,11 @@ def update_admin_tenant_status(db: Session, tenant_id: uuid.UUID, is_active: boo
     if not t:
         return False
     t.is_active = is_active
+    new_status = "active" if is_active else "suspended"
+    db.query(TenantMembership).filter(TenantMembership.tenant_id == tenant_id).update(
+        {TenantMembership.status: new_status},
+        synchronize_session=False,
+    )
     db.commit()
     return True
 
@@ -209,6 +350,14 @@ def delete_admin_tenant(db: Session, tenant_id: uuid.UUID) -> bool:
         return False
     t.is_deleted = True
     t.is_active = False
+    db.query(ChannelConnection).filter(ChannelConnection.tenant_id == tenant_id).update(
+        {ChannelConnection.status: ChannelStatus.DISCONNECTED, ChannelConnection.is_active: False},
+        synchronize_session=False,
+    )
+    db.query(TenantMembership).filter(TenantMembership.tenant_id == tenant_id).update(
+        {TenantMembership.status: "suspended"},
+        synchronize_session=False,
+    )
     db.commit()
     return True
 

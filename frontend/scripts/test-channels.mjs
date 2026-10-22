@@ -56,6 +56,10 @@ describe("Channel proxy allowlist", () => {
       code: "authorization-code",
     });
     assert.deepEqual(Object.keys(embeddedSignup.body).sort(), ["code", "phone_number_id", "waba_id"]);
+    const codeOnly = buildChannelProxyTarget("POST", [id, "whatsapp", "connect"], params(), {
+      code: "authorization-code",
+    });
+    assert.deepEqual(codeOnly.body, { code: "authorization-code" });
     assert.equal(buildChannelProxyTarget("POST", [id, "whatsapp", "connect"], params(), { phone_number_id: "abc", waba_id: "200000000000001", access_token: "t" }), null);
     assert.equal(buildChannelProxyTarget("POST", [id, "whatsapp", "connect"], params(), { phone_number_id: "1", waba_id: "2", access_token: "t", code: "x" }), null);
     assert.equal(buildChannelProxyTarget("POST", [id, "whatsapp", "connect"], params(), { phone_number_id: "1", waba_id: "2", access_token: "" }), null);

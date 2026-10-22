@@ -16,8 +16,8 @@ class WhatsAppConnectRequest(BaseModel):
     The "exactly one" rule is enforced in the service.
     """
 
-    phone_number_id: str = Field(pattern=META_ID_PATTERN)
-    waba_id: str = Field(pattern=META_ID_PATTERN)
+    phone_number_id: str | None = Field(default=None, pattern=META_ID_PATTERN)
+    waba_id: str | None = Field(default=None, pattern=META_ID_PATTERN)
     access_token: SecretStr | None = Field(
         default=None, min_length=1, max_length=4096,
     )

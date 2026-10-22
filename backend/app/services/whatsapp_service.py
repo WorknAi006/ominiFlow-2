@@ -199,6 +199,11 @@ def connect_whatsapp_channel(
             "Provide exactly one of access_token or code."
         )
 
+    if data.access_token is not None and (not data.phone_number_id or not data.waba_id):
+        raise InvalidConnectRequestError(
+            "phone_number_id and waba_id are required when using access_token."
+        )
+
     channel = _load_channel(db, tenant_id, channel_id)
 
     if channel.channel_type != ChannelType.WHATSAPP:
@@ -211,7 +216,8 @@ def connect_whatsapp_channel(
             "WhatsApp integration is not configured."
         )
 
-    _ensure_phone_available(db, tenant_id, channel_id, data.phone_number_id)
+    if data.phone_number_id:
+        _ensure_phone_available(db, tenant_id, channel_id, data.phone_number_id)
 
     # End the read transaction: no locks or open transaction are held
     # while waiting on Meta.
@@ -220,15 +226,27 @@ def connect_whatsapp_channel(
     try:
         if data.code is not None:
             credentials = provider.exchange_code(data.code.get_secret_value())
+            phone_number_id, waba_id = provider.resolve_embedded_assets(
+                credentials,
+                phone_number_id=data.phone_number_id,
+                waba_id=data.waba_id,
+            )
         else:
             credentials = ProviderCredentials(
                 access_token=data.access_token.get_secret_value(),
             )
+            assert data.phone_number_id and data.waba_id
+            phone_number_id = data.phone_number_id
+            waba_id = data.waba_id
+
+        # If phone_number_id was resolved from Meta, verify availability now
+        if not data.phone_number_id:
+            _ensure_phone_available(db, tenant_id, channel_id, phone_number_id)
 
         info, credentials = provider.verify_account(
-            credentials, data.phone_number_id, data.waba_id,
+            credentials, phone_number_id, waba_id,
         )
-        provider.subscribe_webhooks(credentials, data.waba_id)
+        provider.subscribe_webhooks(credentials, waba_id)
 
     except ProviderNotConfiguredError:
         raise WhatsAppNotConfiguredError(
@@ -262,6 +280,10 @@ def connect_whatsapp_channel(
     channel.provider_metadata = info.metadata
     channel.last_connected_at = _utcnow()
     channel.last_error = None
+
+    display_label = (info.metadata or {}).get("verified_name") or (info.metadata or {}).get("display_phone_number")
+    if display_label and channel.name in ("WhatsApp", "WhatsApp Business", "WhatsApp Channel"):
+        channel.name = f"WhatsApp ({display_label})"
 
     try:
         db.commit()

@@ -24,8 +24,8 @@ export interface ConnectionCheck {
 }
 
 export interface WhatsAppConnectInput {
-  phone_number_id: string;
-  waba_id: string;
+  phone_number_id?: string;
+  waba_id?: string;
   access_token?: string;
   code?: string;
 }

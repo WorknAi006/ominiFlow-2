@@ -48,10 +48,18 @@ class User(Base, UUIDMixin, TimestampMixin):
         nullable=False,
     )
 
-    is_platform_admin: Mapped[bool] = mapped_column(
+    is_platform_super_admin: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
         server_default="false",
         nullable=False,
         index=True,
     )
+
+    @property
+    def is_platform_admin(self) -> bool:
+        return bool(self.is_platform_super_admin)
+
+    @is_platform_admin.setter
+    def is_platform_admin(self, value: bool) -> None:
+        self.is_platform_super_admin = bool(value)

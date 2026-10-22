@@ -7,6 +7,7 @@ const backendUrl = (
 ).replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   reactStrictMode: false,
   devIndicators: false,
   async rewrites() {

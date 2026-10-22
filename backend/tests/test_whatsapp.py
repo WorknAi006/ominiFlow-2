@@ -326,6 +326,53 @@ class ConnectTests(WhatsAppTestCase):
         self.assertEqual(get_credential_service().decrypt(channel.access_token_encrypted), GOOD_TOKEN)
         self.assert_no_secrets(response.text)
 
+    def test_connect_with_embedded_signup_code_auto_discovery(self):
+        # In Embedded Signup v4, frontend can supply only the code.
+        # WABA ID and phone number ID are auto-discovered from token granular scopes and phone list.
+        response = self.client.post(
+            f"/api/v1/channels/{self.wa_a.id}/whatsapp/connect",
+            headers=self.auth(self.owner, self.tenant_a),
+            json={"code": GOOD_CODE},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["status"], "connected")
+        self.assertEqual(body["external_account_id"], PHONE)
+        self.assertEqual(body["external_business_id"], WABA)
+        self.assertTrue(body["has_credentials"])
+
+        channel = self.reload(self.wa_a)
+        self.assertEqual(channel.status, ChannelStatus.CONNECTED)
+        self.assertEqual(channel.external_account_id, PHONE)
+        self.assertEqual(channel.external_business_id, WABA)
+        self.assertEqual(
+            get_credential_service().decrypt(channel.access_token_encrypted),
+            GOOD_TOKEN,
+        )
+        self.assertEqual(channel.name, "WA A")
+        self.assert_no_secrets(response.text)
+
+    def test_connect_code_discovery_fails_when_no_waba_target(self):
+        # Exchanged token does not grant access to any target WABA
+        self.graph.codes["code-no-targets"] = NO_ACCESS_TOKEN
+        response = self.client.post(
+            f"/api/v1/channels/{self.wa_a.id}/whatsapp/connect",
+            headers=self.auth(self.owner, self.tenant_a),
+            json={"code": "code-no-targets"},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("WhatsApp Business Account could not be determined", response.text)
+        self.assertEqual(self.reload(self.wa_a).status, "error")
+
+    def test_connect_token_without_ids_rejected(self):
+        # Direct access_token requires phone_number_id and waba_id
+        response = self.client.post(
+            f"/api/v1/channels/{self.wa_a.id}/whatsapp/connect",
+            headers=self.auth(self.owner, self.tenant_a),
+            json={"access_token": GOOD_TOKEN},
+        )
+        self.assertEqual(response.status_code, 422)
+
     def test_embedded_signup_config_is_returned_only_when_configured(self):
         original = settings.meta_embedded_signup_config_id
         try:
@@ -665,6 +712,18 @@ class WebhookTests(WhatsAppTestCase):
             status=ChannelStatus.CONNECTED,
             external_account_id=PHONE_B, external_business_id=WABA_B,
         )
+
+    def setUp(self):
+        super().setUp()
+        self.db.query(WhatsAppEvent).delete()
+        self.db.commit()
+        self.conn_a = self.reload(self.conn_a)
+        self.conn_b = self.reload(self.conn_b)
+        self.conn_a.status = ChannelStatus.CONNECTED
+        self.conn_a.is_active = True
+        self.conn_b.status = ChannelStatus.CONNECTED
+        self.conn_b.is_active = True
+        self.db.commit()
 
     def post(self, body, signature=None, raw=None):
         content = raw if raw is not None else json.dumps(body).encode()

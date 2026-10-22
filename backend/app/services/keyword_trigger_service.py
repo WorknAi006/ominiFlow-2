@@ -32,9 +32,7 @@ def _normalize(text: str) -> str:
     return " ".join(text.split()).strip().lower()
 
 
-def text_matches(message_text: str, keyword_text: str, match_type: str) -> bool:
-    m = _normalize(message_text)
-    k = _normalize(keyword_text)
+def _single_match(m: str, k: str, match_type: str) -> bool:
     if not k or not m:
         return False
     if match_type == "exact":
@@ -48,13 +46,32 @@ def text_matches(message_text: str, keyword_text: str, match_type: str) -> bool:
     return False
 
 
+def text_matches(message_text: str, keyword_text: str, match_type: str) -> bool:
+    m = _normalize(message_text)
+    if not m or not keyword_text:
+        return False
+    # If the rule contains comma-separated keywords (e.g. "hi, hello, hey")
+    if "," in keyword_text:
+        parts = [p.strip() for p in keyword_text.split(",") if p.strip()]
+        for part in parts:
+            if _single_match(m, _normalize(part), match_type):
+                return True
+        return False
+    return _single_match(m, _normalize(keyword_text), match_type)
+
+
 def find_matching_keyword(session: Session, tenant_id: uuid.UUID, text: str) -> Keyword | None:
-    """First active keyword (oldest first) whose rule matches the text."""
+    """First active keyword whose rule matches the text, prioritizing keywords with configured actions."""
     keywords = session.execute(
         select(Keyword)
         .where(Keyword.tenant_id == tenant_id, Keyword.is_active.is_(True))
         .order_by(Keyword.created_at.asc(), Keyword.id.asc())
     ).scalars().all()
+    # First pass: find active keyword with configured flow or reply
+    for kw in keywords:
+        if (kw.flow_id is not None or (kw.reply_text and kw.reply_text.strip())) and text_matches(text, kw.keyword_text, kw.match_type):
+            return kw
+    # Second pass: any other matching keyword
     for kw in keywords:
         if text_matches(text, kw.keyword_text, kw.match_type):
             return kw
@@ -155,7 +172,8 @@ def handle_inbound(
         active = flow_engine.active_session_for(session, tenant_id, conversation.id)
         if active is not None:
             if active.status == "waiting" and active.wait_kind == "reply":
-                flow_engine.capture_reply(session, active, text)
+                msg_meta = getattr(message, "message_metadata", None)
+                flow_engine.capture_reply(session, active, text, metadata=msg_meta if isinstance(msg_meta, dict) else None)
             return None
 
         # Idempotency guard (belt-and-braces with the unique constraint).

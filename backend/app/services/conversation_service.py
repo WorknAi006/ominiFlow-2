@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, aliased
 from app.models import (
     ACTIVE_CONVERSATION_STATUSES,
     ChannelConnection,
+    ChannelStatus,
     Contact,
     Conversation,
     ConversationStatus,
@@ -482,9 +483,16 @@ def get_or_create_conversation(
             .one()
         )
 
-        if force_channel or inbound_at is not None and (
+        existing_channel = db.get(ChannelConnection, conversation.channel_connection_id)
+        channel_is_dead = (
+            existing_channel is None
+            or existing_channel.status != ChannelStatus.CONNECTED
+            or not existing_channel.is_active
+            or existing_channel.is_deleted
+        )
+        if force_channel or channel_is_dead or (inbound_at is not None and (
             conversation.last_inbound_at is None or inbound_at >= conversation.last_inbound_at
-        ):
+        )):
             conversation.channel_connection_id = channel_id
         if inbound_at is not None and (
             conversation.last_inbound_at is None or inbound_at >= conversation.last_inbound_at

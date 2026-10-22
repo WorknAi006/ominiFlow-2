@@ -104,12 +104,29 @@ function buildConnectBody(body: unknown): Record<string, unknown> | null {
   for (const key of Object.keys(body)) if (!allowed.has(key)) return null;
 
   const { phone_number_id, waba_id, access_token, code } = body;
-  if (typeof phone_number_id !== "string" || !META_ID_PATTERN.test(phone_number_id)) return null;
-  if (typeof waba_id !== "string" || !META_ID_PATTERN.test(waba_id)) return null;
   const hasAccessToken = typeof access_token === "string" && access_token.length >= 1 && access_token.length <= 4096;
   const hasCode = typeof code === "string" && code.length >= 1 && code.length <= 4096;
   if (hasAccessToken === hasCode) return null;
-  return { phone_number_id, waba_id, ...(hasAccessToken ? { access_token } : { code }) };
+
+  const out: Record<string, unknown> = hasAccessToken ? { access_token } : { code };
+
+  if (hasAccessToken) {
+    if (typeof phone_number_id !== "string" || !META_ID_PATTERN.test(phone_number_id)) return null;
+    if (typeof waba_id !== "string" || !META_ID_PATTERN.test(waba_id)) return null;
+    out.phone_number_id = phone_number_id;
+    out.waba_id = waba_id;
+  } else {
+    if (phone_number_id !== undefined) {
+      if (typeof phone_number_id !== "string" || !META_ID_PATTERN.test(phone_number_id)) return null;
+      out.phone_number_id = phone_number_id;
+    }
+    if (waba_id !== undefined) {
+      if (typeof waba_id !== "string" || !META_ID_PATTERN.test(waba_id)) return null;
+      out.waba_id = waba_id;
+    }
+  }
+
+  return out;
 }
 
 function buildFacebookConnectBody(body: unknown): Record<string, unknown> | null {

@@ -1,5 +1,9 @@
 # Omniflow
 
+Production deployment for the FM Films domains and the existing shared VPS gateway:
+see [deploy/README.md](deploy/README.md) and [the repository audit](deploy/AUDIT.md).
+The root Compose file is now production-only. It publishes no host ports.
+
 Multi-tenant omnichannel SaaS platform.
 
 - `backend/`: FastAPI, synchronous SQLAlchemy, PostgreSQL, Alembic

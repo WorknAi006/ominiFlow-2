@@ -116,6 +116,89 @@ class WhatsAppProvider(ChannelProvider):
 
         return ProviderCredentials(access_token=token)
 
+    def resolve_embedded_assets(
+        self,
+        credentials: ProviderCredentials,
+        phone_number_id: str | None = None,
+        waba_id: str | None = None,
+    ) -> tuple[str, str]:
+        """
+        In Embedded Signup v4, resolve the customer's WABA ID and phone number ID.
+        If both are provided, they are returned as-is.
+        If waba_id is missing, inspect token granular scopes to find target WABA IDs.
+        If phone_number_id is missing, query the WABA phone numbers and select the phone number.
+        """
+        if phone_number_id and waba_id:
+            return phone_number_id, waba_id
+
+        with self._client() as client:
+            resolved_waba_id = waba_id
+            if not resolved_waba_id:
+                token_data = self._call(
+                    lambda: client.debug_token(credentials.access_token),
+                    "Access token could not be verified.",
+                )
+                granular_scopes = token_data.get("granular_scopes") or []
+                for granular in granular_scopes:
+                    if not isinstance(granular, dict):
+                        continue
+                    if granular.get("scope") in REQUIRED_SCOPES:
+                        targets = granular.get("target_ids") or []
+                        if targets:
+                            resolved_waba_id = str(targets[0])
+                            break
+
+                if not resolved_waba_id:
+                    try:
+                        businesses = client.request(
+                            "GET",
+                            "me/businesses",
+                            access_token=credentials.access_token,
+                            params={"fields": "id,name", "limit": 10},
+                        )
+                        for biz in businesses.get("data") or []:
+                            biz_id = biz.get("id")
+                            if biz_id:
+                                wabas = client.request(
+                                    "GET",
+                                    f"{biz_id}/owned_whatsapp_business_accounts",
+                                    access_token=credentials.access_token,
+                                    params={"fields": "id,name", "limit": 10},
+                                )
+                                waba_items = wabas.get("data") or []
+                                if waba_items:
+                                    resolved_waba_id = str(waba_items[0].get("id"))
+                                    break
+                    except Exception:
+                        pass
+
+                if not resolved_waba_id:
+                    raise ProviderVerificationError(
+                        "WhatsApp Business Account could not be determined. "
+                        "Please ensure your WhatsApp Business Account is selected in Embedded Signup."
+                    )
+
+            resolved_phone_id = phone_number_id
+            if not resolved_phone_id:
+                numbers = self._call(
+                    lambda: client.request(
+                        "GET",
+                        f"{resolved_waba_id}/phone_numbers",
+                        access_token=credentials.access_token,
+                        params={"fields": PHONE_NUMBER_FIELDS, "limit": 100},
+                    ),
+                    "Phone numbers could not be loaded.",
+                )
+                data = numbers.get("data") or []
+                if not data:
+                    raise ProviderVerificationError(
+                        "No phone numbers found for this WhatsApp Business Account. "
+                        "Please complete phone number registration in Embedded Signup."
+                    )
+                resolved_phone_id = str(data[0].get("id"))
+
+            return resolved_phone_id, resolved_waba_id
+
     def inspect_token(
         self,
         client: MetaGraphClient,
@@ -465,11 +548,15 @@ class WhatsAppProvider(ChannelProvider):
     @staticmethod
     def _interactive_header(header: dict[str, Any]) -> dict[str, Any]:
         """Build an interactive header object from a resolved header dict:
-        {"type":"text","text":...} or {"type":"image"/"video"/"document","id":media_id,"filename"?}."""
+        {"type":"text","text":...} or {"type":"image"/"video"/"document","id":media_id,"link":media_url,"filename"?}."""
         htype = header.get("type")
         if htype == "text":
             return {"type": "text", "text": str(header.get("text") or "")[:60]}
-        media_obj: dict[str, Any] = {"id": header["id"]}
+        media_obj: dict[str, Any] = {}
+        if header.get("id"):
+            media_obj["id"] = header["id"]
+        elif header.get("link"):
+            media_obj["link"] = header["link"]
         if htype == "document" and header.get("filename"):
             media_obj["filename"] = str(header["filename"])[:255]
         return {"type": htype, htype: media_obj}
@@ -486,28 +573,64 @@ class WhatsAppProvider(ChannelProvider):
         reply_buttons: list[dict[str, Any]] | None = None,
         url_buttons: list[dict[str, Any]] | None = None,
         call_buttons: list[dict[str, Any]] | None = None,
+        list_items: list[dict[str, Any]] | None = None,
+        button_text: str | None = None,
         reply_to_external_id: str | None = None,
     ) -> str:
         """
-        Send an interactive message. WhatsApp cannot mix quick-reply buttons
-        with URL/call buttons in one message, so:
+        Send an interactive message. WhatsApp supports:
+          - with list items: an interactive "list" message (popup menu with up to 10 rows).
           - with quick replies: an interactive "button" message (up to 3
             tappable replies); any URL/call buttons are appended to the body
             as text lines.
           - with only a single URL button: an interactive "cta_url" message.
           - otherwise: a plain text message (body + any call/url lines).
         """
+        if list_items:
+            rows = []
+            for item in list_items[:10]:
+                row_id = str(item.get("id") or item.get("title") or "")[:200]
+                row_title = str(item.get("title") or item.get("id") or "Option")[:24]
+                row_desc = str(item.get("description") or "")[:72] if item.get("description") else None
+                row: dict[str, Any] = {"id": row_id, "title": row_title}
+                if row_desc:
+                    row["description"] = row_desc
+                rows.append(row)
+
+            interactive: dict[str, Any] = {
+                "type": "list",
+                "body": {"text": body[:1024]},
+                "action": {
+                    "button": str(button_text or "Select Option")[:20],
+                    "sections": [
+                        {"title": "Options", "rows": rows}
+                    ],
+                },
+            }
+            if header and header.get("type") == "text" and header.get("text"):
+                interactive["header"] = {"type": "text", "text": str(header.get("text"))[:60]}
+            if footer and footer.strip():
+                interactive["footer"] = {"text": footer[:60]}
+
+            return self._send_message(
+                credentials, phone_number_id, {"type": "interactive", "interactive": interactive}, to, reply_to_external_id,
+            )
+
         reply_buttons = list(reply_buttons or [])[:3]
         url_buttons = list(url_buttons or [])
         call_buttons = list(call_buttons or [])
 
-        def _extra_lines(urls: list[dict[str, Any]]) -> list[str]:
-            lines = [f"{b['title']}: {b['url']}" for b in urls if b.get("url")]
-            lines += [f"{b['title']}: {b['phone_number']}" for b in call_buttons if b.get("phone_number")]
-            return lines
+        def _clean_url(u: str) -> str:
+            u = u.strip()
+            if not u.startswith(("http://", "https://")):
+                return f"https://{u}"
+            return u
+
 
         if reply_buttons:
-            lines = _extra_lines(url_buttons)
+            extra_urls = [f"🔗 {b['title']}: {_clean_url(str(b['url']))}" for b in url_buttons if b.get("url")]
+            extra_calls = [f"📞 {b['title']}: {b.get('phone_number') or b.get('phoneNumber')}" for b in call_buttons if b.get("phone_number") or b.get("phoneNumber")]
+            lines = extra_urls + extra_calls
             body_text = body + ("\n\n" + "\n".join(lines) if lines else "")
             interactive: dict[str, Any] = {
                 "type": "button",
@@ -521,19 +644,53 @@ class WhatsAppProvider(ChannelProvider):
             }
         elif url_buttons:
             primary = url_buttons[0]
-            lines = _extra_lines(url_buttons[1:])
+            clean_primary_url = _clean_url(str(primary.get("url") or ""))
+            extra_urls = [f"🔗 {b['title']}: {_clean_url(str(b['url']))}" for b in url_buttons[1:] if b.get("url")]
+            extra_calls = [f"📞 {b['title']}: {b.get('phone_number') or b.get('phoneNumber')}" for b in call_buttons if b.get("phone_number") or b.get("phoneNumber")]
+            lines = extra_urls + extra_calls
             body_text = body + ("\n\n" + "\n".join(lines) if lines else "")
             interactive = {
                 "type": "cta_url",
                 "body": {"text": body_text[:1024]},
                 "action": {
                     "name": "cta_url",
-                    "parameters": {"display_text": str(primary["title"])[:20], "url": primary["url"]},
+                    "parameters": {"display_text": str(primary["title"])[:20], "url": clean_primary_url},
+                },
+            }
+        elif call_buttons:
+            primary = call_buttons[0]
+            raw_phone = str(primary.get("phone_number") or primary.get("phoneNumber") or "").strip()
+            digits_and_plus = "".join(c for c in raw_phone if c.isdigit() or c == "+")
+            if not digits_and_plus.startswith("+"):
+                if len(digits_and_plus) == 10 and not digits_and_plus.startswith("91"):
+                    digits_and_plus = f"+91{digits_and_plus}"
+                else:
+                    digits_and_plus = f"+{digits_and_plus}"
+            clean_tel = f"tel:{digits_and_plus}"
+            extra_calls = [f"📞 {b['title']}: {b.get('phone_number') or b.get('phoneNumber')}" for b in call_buttons[1:] if b.get("phone_number") or b.get("phoneNumber")]
+            body_text = body + ("\n\n" + "\n".join(extra_calls) if extra_calls else "")
+            interactive = {
+                "type": "cta_url",
+                "body": {"text": body_text[:1024]},
+                "action": {
+                    "name": "cta_url",
+                    "parameters": {
+                        "display_text": str(primary.get("title") or "Call us")[:20],
+                        "url": clean_tel,
+                    },
                 },
             }
         else:
-            lines = [f"{b['title']}: {b['phone_number']}" for b in call_buttons if b.get("phone_number")]
-            body_text = body + ("\n\n" + "\n".join(lines) if lines else "")
+            lines = [f"📞 {b['title']}: {b.get('phone_number') or b.get('phoneNumber')}" for b in call_buttons if b.get("phone_number") or b.get("phoneNumber")]
+            parts = []
+            if header and header.get("type") == "text" and header.get("text"):
+                parts.append(f"*{header['text']}*")
+            parts.append(body)
+            if lines:
+                parts.append("\n".join(lines))
+            if footer and footer.strip():
+                parts.append(f"_{footer.strip()}_")
+            body_text = "\n\n".join(parts)
             return self.send_text_message(credentials, phone_number_id, to, body_text, reply_to_external_id)
 
         if header:
@@ -551,13 +708,20 @@ class WhatsAppProvider(ChannelProvider):
         phone_number_id: str,
         to: str,
         media_type: str,
-        media_id: str,
+        media_id: str | None = None,
+        media_url: str | None = None,
         caption: str | None = None,
         filename: str | None = None,
         reply_to_external_id: str | None = None,
     ) -> str:
-        """Send an image/video/audio/document by uploaded media id."""
-        media_obj: dict[str, Any] = {"id": media_id}
+        """Send an image/video/audio/document by uploaded media id or public url."""
+        media_obj: dict[str, Any] = {}
+        if media_id:
+            media_obj["id"] = media_id
+        elif media_url:
+            media_obj["link"] = media_url
+        else:
+            raise ProviderRequestError("No media ID or URL provided for media message.")
         if caption and caption.strip() and media_type in ("image", "video", "document"):
             media_obj["caption"] = caption[:1024]
         if media_type == "document" and filename:

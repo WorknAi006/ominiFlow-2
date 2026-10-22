@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew only the FM Films Let's Encrypt certificate
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/www/fmfilms
+ExecStart=/usr/bin/bash /var/www/fmfilms/deploy/renew-ssl.sh

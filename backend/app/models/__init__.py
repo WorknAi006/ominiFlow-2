@@ -57,6 +57,9 @@ from app.models.flow_session import FlowSession, FlowSessionStatus, FlowSessionW
 from app.models.keyword_trigger import KeywordTrigger, KeywordTriggerAction, KeywordTriggerStatus
 from app.models.payment import PaymentTransaction, TenantAiCredit
 from app.models.credit_usage import CreditUsage
+from app.models.whatsapp_usage import WhatsAppUsageRecord
+from app.models.billing_invoice import BillingInvoice
+
 
 
 __all__ = [
@@ -119,4 +122,7 @@ __all__ = [
     "PaymentTransaction",
     "TenantAiCredit",
     "CreditUsage",
+    "WhatsAppUsageRecord",
+    "BillingInvoice",
 ]
+

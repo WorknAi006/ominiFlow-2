@@ -7,6 +7,7 @@ import { AdminTenantItem } from "../../../lib/types/admin";
 import { StatusBadge } from "../../../components/badges/status-badge";
 import { SkeletonTable } from "../../../components/loading/skeleton-table";
 import { ConfirmDialog } from "../../../components/dialogs/confirm-dialog";
+import { CreateTenantDialog } from "../../../components/dialogs/create-tenant-dialog";
 
 export default function TenantsPage() {
   const [tenants, setTenants] = useState<AdminTenantItem[]>([]);
@@ -19,9 +20,11 @@ export default function TenantsPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Dialog state
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [actionTarget, setActionTarget] = useState<AdminTenantItem | null>(null);
   const [actionType, setActionType] = useState<"suspend" | "restore" | "delete" | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
 
   const fetchTenants = async () => {
     try {
@@ -83,10 +86,19 @@ export default function TenantsPage() {
             All registered organizations and workspaces on the Omniflow platform.
           </p>
         </div>
-        <div className="text-xs text-slate-400">
-          Total Organizations: <span className="font-semibold text-white">{total}</span>
+        <div className="flex items-center gap-3">
+          <div className="text-xs text-slate-400">
+            Total Organizations: <span className="font-semibold text-white">{total}</span>
+          </div>
+          <button
+            onClick={() => setIsCreateOpen(true)}
+            className="px-3.5 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold shadow-lg shadow-sky-600/30 transition-all flex items-center gap-1.5"
+          >
+            <span>+</span> Provision New Tenant
+          </button>
         </div>
       </div>
+
 
       {/* Filters Bar */}
       <div className="flex flex-col sm:flex-row gap-3 items-center justify-between bg-[#0f172a] p-3 rounded-lg border border-slate-800">
@@ -279,6 +291,15 @@ export default function TenantsPage() {
           setActionType(null);
         }}
       />
+
+      <CreateTenantDialog
+        isOpen={isCreateOpen}
+        onClose={() => setIsCreateOpen(false)}
+        onCreated={() => {
+          fetchTenants();
+        }}
+      />
     </div>
   );
 }
+

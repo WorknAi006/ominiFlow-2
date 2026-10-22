@@ -317,3 +317,168 @@ class FlowEngineTests(InboxTestCase):
         self.db.expire_all()
         self.assertIn("Second", self.sent_texts())
         self.assertEqual(self.session().status, "completed")
+
+    # ---- interactive list: menu with rows and branching ----
+    def test_list_interactive_branch(self):
+        nodes = [
+            {"id": "start", "type": "message", "position": {"x": 0, "y": 0}, "data": {
+                "isStart": True, "messageType": "list", "message": "Select service",
+                "header": {"type": "text", "text": "Our Services"},
+                "buttonText": "View Menu",
+                "listItems": [
+                    {"id": "s1", "title": "IT Services"},
+                    {"id": "s2", "title": "Products"},
+                ],
+            }},
+            {"id": "it_node", "type": "message", "position": {"x": 1, "y": 0}, "data": {"messageType": "text", "message": "You chose IT"}},
+            {"id": "prod_node", "type": "message", "position": {"x": 1, "y": 1}, "data": {"messageType": "text", "message": "You chose Products"}},
+        ]
+        edges = [
+            {"id": "e1", "source": "start", "target": "it_node", "sourceHandle": "item:s1"},
+            {"id": "e2", "source": "start", "target": "prod_node", "sourceHandle": "item:s2"},
+        ]
+        self.make_keyword("services", self.make_flow_graph(nodes, edges, "ServicesFlow"))
+
+        self.ingest("services", "wamid.L1")
+        self.pump()
+
+        interactive = [p for p in self.sent_payloads() if p.get("type") == "interactive"]
+        self.assertEqual(len(interactive), 1)
+        body = interactive[0]["interactive"]
+        self.assertEqual(body["type"], "list")
+        self.assertEqual(body["action"]["button"], "View Menu")
+        self.assertEqual(len(body["action"]["sections"][0]["rows"]), 2)
+        self.assertEqual(body["action"]["sections"][0]["rows"][0]["id"], "s1")
+        self.assertEqual(self.session().status, "waiting")
+
+        # Ingest interactive reply from list selection
+        provider = get_provider(ChannelType.WHATSAPP)
+        raw = {
+            "payload": {
+                "message": {
+                    "id": "wamid.L2", "from": CUSTOMER, "type": "interactive",
+                    "interactive": {"type": "list_reply", "list_reply": {"id": "s1", "title": "IT Services"}},
+                },
+                "contact": {"wa_id": CUSTOMER, "profile": {"name": "Jane"}},
+            },
+            "external_message_id": "wamid.L2", "external_sender_id": CUSTOMER,
+            "external_event_id": "message:wamid.L2", "occurred_at": BASE_TIME,
+        }
+        event = provider.normalize_inbound_message(self.wa_a, raw)
+        inbound_event_service.process_inbound_event(self.db, event)
+        self.db.commit()
+        self.db.expire_all()
+        self.pump()
+
+        self.assertIn("You chose IT", self.sent_texts())
+        self.assertEqual(self.session().status, "completed")
+
+    # ---- Call Us only button node ----
+    def test_button_call_us_only(self):
+        nodes = [
+            {"id": "start", "type": "message", "position": {"x": 0, "y": 0}, "data": {
+                "isStart": True, "messageType": "button", "message": "Reach our helpline below",
+                "header": {"type": "text", "text": "Contact Helpline"},
+                "footer": "Available 9am - 6pm",
+                "buttons": [
+                    {"id": "c1", "title": "Call Helpdesk", "kind": "call", "phoneNumber": "+15551234567"},
+                ],
+            }},
+            {"id": "next", "type": "message", "position": {"x": 1, "y": 0}, "data": {"messageType": "text", "message": "Continuing automatically"}},
+        ]
+        edges = [{"id": "e1", "source": "start", "target": "next", "sourceHandle": "continue"}]
+        self.make_keyword("callme", self.make_flow_graph(nodes, edges, "CallFlow"))
+
+        self.ingest("callme", "wamid.C1")
+        self.pump()
+
+        payloads = self.sent_payloads()
+        text_payload = next(p for p in payloads if p.get("type") == "text")
+        self.assertIn("*Contact Helpline*", text_payload["text"]["body"])
+        self.assertIn("+15551234567", text_payload["text"]["body"])
+        self.assertIn("_Available 9am - 6pm_", text_payload["text"]["body"])
+        # Because call-only buttons cannot be tapped in WhatsApp with reply webhooks,
+        # the engine continues to the next node immediately.
+        texts = self.sent_texts()
+        self.assertIn("Continuing automatically", texts)
+        self.assertEqual(self.session().status, "completed")
+
+    # ---- External API node ----
+    def test_external_api_node(self):
+        from unittest.mock import MagicMock, patch
+        import httpx
+        real_request = httpx.Client.request
+
+        def selective_request(client_self, method, url, **kwargs):
+            if "api.example.com" in str(url):
+                fake_response = MagicMock()
+                fake_response.text = '{"status": "ok", "order_id": 9999}'
+                fake_response.json.return_value = {"status": "ok", "order_id": 9999}
+                fake_response.status_code = 200
+                return fake_response
+            return real_request(client_self, method, url, **kwargs)
+
+        nodes = [
+            {"id": "start", "type": "message", "position": {"x": 0, "y": 0}, "data": {
+                "isStart": True, "messageType": "external_api",
+                "apiUrl": "https://api.example.com/orders",
+                "apiMethod": "POST",
+                "apiBody": '{"customer": "{{contact_phone}}"}',
+                "responseVariable": "api_result",
+            }},
+            {"id": "resp_node", "type": "message", "position": {"x": 1, "y": 0}, "data": {
+                "messageType": "text", "message": "Order placed: {{api_result_order_id}}",
+            }},
+        ]
+        edges = [{"id": "e1", "source": "start", "target": "resp_node", "sourceHandle": "continue"}]
+        self.make_keyword("order", self.make_flow_graph(nodes, edges, "ApiFlow"))
+
+        with patch("httpx.Client.request", side_effect=selective_request, autospec=True):
+            self.ingest("order", "wamid.API1")
+            self.pump()
+
+        self.assertIn("Order placed: 9999", self.sent_texts())
+        self.assertEqual(self.session().status, "completed")
+
+    # ---- Actions node ----
+    def test_actions_node(self):
+        nodes = [
+            {"id": "start", "type": "message", "position": {"x": 0, "y": 0}, "data": {
+                "isStart": True, "messageType": "actions",
+                "actions": [
+                    {"type": "add_tags", "config": {"value": "VIP, Lead"}},
+                ],
+            }},
+            {"id": "done", "type": "message", "position": {"x": 1, "y": 0}, "data": {
+                "messageType": "text", "message": "Tagged successfully",
+            }},
+        ]
+        edges = [{"id": "e1", "source": "start", "target": "done", "sourceHandle": "continue"}]
+        self.make_keyword("tagme", self.make_flow_graph(nodes, edges, "TagFlow"))
+
+        self.ingest("tagme", "wamid.TAG1")
+        self.pump()
+
+        self.assertIn("Tagged successfully", self.sent_texts())
+        self.assertEqual(self.session().status, "completed")
+
+    # ---- Media node with external URL ----
+    def test_media_url_node(self):
+        nodes = [
+            {"id": "start", "type": "message", "position": {"x": 0, "y": 0}, "data": {
+                "isStart": True, "messageType": "image", "message": "Check this flyer",
+                "mediaUrl": "https://images.example.com/flyer.jpg",
+            }},
+        ]
+        self.make_keyword("flyer", self.make_flow_graph(nodes, [], "FlyerFlow"))
+
+        self.ingest("flyer", "wamid.MURL1")
+        self.pump()
+
+        media = [p for p in self.sent_payloads() if p.get("type") == "image"]
+        self.assertEqual(len(media), 1)
+        self.assertEqual(media[0]["image"].get("link"), "https://images.example.com/flyer.jpg")
+        self.assertEqual(media[0]["image"].get("caption"), "Check this flyer")
+        self.assertEqual(self.session().status, "completed")
+
+

@@ -86,6 +86,23 @@ class AdminCreateTenantRequest(BaseModel):
     email: EmailStr | None = None
     phone: str | None = None
     description: str | None = None
+    owner_email: EmailStr
+    owner_first_name: str = Field(min_length=1, max_length=100)
+    owner_last_name: str | None = Field(default=None, max_length=100)
+    owner_password: str | None = Field(default=None, min_length=8, max_length=128)
+    owner_phone: str | None = None
+    plan: str = Field(default="Standard", max_length=50)
+    initial_credits: float = Field(default=500.0, ge=0.0)
+    is_active: bool = True
+
+
+class AdminCreateTenantResponse(BaseModel):
+    tenant: AdminTenantListItem
+    owner_user: AdminUserResponse
+    temporary_password: str | None = None
+    initial_credits: float
+    message: str
+
 
 
 # --- Users ---
