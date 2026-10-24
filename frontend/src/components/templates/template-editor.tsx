@@ -40,7 +40,31 @@ export function TemplateEditor() {
   const [footerText, setFooterText] = useState("");
   const [buttons, setButtons] = useState<string[]>([]);
   const [headerFile, setHeaderFile] = useState<File | null>(null);
+  const [headerPreviewUrl, setHeaderPreviewUrl] = useState<string | null>(null);
   const [bodyExamples, setBodyExamples] = useState<Record<string, string>>({});
+  const [currentTime, setCurrentTime] = useState("11:27 AM");
+
+  // Keep live time for phone mockup
+  useEffect(() => {
+    const updateTime = () => {
+      const d = new Date();
+      setCurrentTime(d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+    };
+    updateTime();
+  }, []);
+
+  // Generate preview object URL when header media file is selected
+  useEffect(() => {
+    if (headerFile) {
+      const url = URL.createObjectURL(headerFile);
+      setHeaderPreviewUrl(url);
+      return () => {
+        URL.revokeObjectURL(url);
+      };
+    } else {
+      setHeaderPreviewUrl(null);
+    }
+  }, [headerFile]);
 
   // Carousel specific state
   const [carouselMediaType, setCarouselMediaType] = useState<"Image" | "Video">("Image");
@@ -85,7 +109,12 @@ export function TemplateEditor() {
 
   useEffect(() => {
     listChannels({ page: 1, page_size: 100, channel_type: "whatsapp" })
-      .then((r) => setChannels(r.items))
+      .then((r) => {
+        setChannels(r.items);
+        if (r.items.length > 0) {
+          setChannelId((prev) => prev || r.items[0].id);
+        }
+      })
       .catch(() => setChannels([]));
   }, []);
 
@@ -246,6 +275,67 @@ export function TemplateEditor() {
       setSubmittingMeta(false);
     }
   }
+
+  // Rich formatted body renderer with variable substitution & WhatsApp markdown
+  const renderFormattedBody = () => {
+    if (!bodyText.trim()) {
+      return <span className="text-slate-400 italic">Your message preview will appear here</span>;
+    }
+
+    let text = bodyText;
+    bodyVariables.forEach((v) => {
+      const sample = bodyExamples[v];
+      if (sample && sample.trim()) {
+        text = text.replaceAll(v, `__SAMPLE_${v}_${sample.trim()}__`);
+      } else {
+        text = text.replaceAll(v, `__VAR_${v}__`);
+      }
+    });
+
+    const lines = text.split("\n");
+    return lines.map((line, lIdx) => {
+      const tokens = line.split(/(__SAMPLE_[^_]+_[^_]+__|__VAR_[^_]+__|\*[^*]+\*|_[^_]+_|~[^~]+~|`[^`]+`)/g);
+
+      return (
+        <span key={lIdx} className="block min-h-[1.25rem]">
+          {tokens.map((token, tIdx) => {
+            if (!token) return null;
+            if (token.startsWith("__SAMPLE_") && token.endsWith("__")) {
+              const inner = token.slice(9, -2);
+              const idx = inner.indexOf("_");
+              const val = inner.slice(idx + 1);
+              return (
+                <span key={tIdx} className="font-semibold text-emerald-800 bg-emerald-50 px-1 py-0.5 rounded border border-emerald-200/60" title="Variable Sample">
+                  {val}
+                </span>
+              );
+            }
+            if (token.startsWith("__VAR_") && token.endsWith("__")) {
+              const varName = token.slice(6, -2);
+              return (
+                <span key={tIdx} className="font-mono text-[11px] font-bold text-emerald-700 bg-emerald-100/80 px-1.5 py-0.5 rounded border border-emerald-300/80" title="Placeholder">
+                  {varName}
+                </span>
+              );
+            }
+            if (token.startsWith("*") && token.endsWith("*") && token.length > 2) {
+              return <strong key={tIdx} className="font-bold text-slate-900">{token.slice(1, -1)}</strong>;
+            }
+            if (token.startsWith("_") && token.endsWith("_") && token.length > 2) {
+              return <em key={tIdx} className="italic text-slate-800">{token.slice(1, -1)}</em>;
+            }
+            if (token.startsWith("~") && token.endsWith("~") && token.length > 2) {
+              return <del key={tIdx} className="line-through text-slate-500">{token.slice(1, -1)}</del>;
+            }
+            if (token.startsWith("`") && token.endsWith("`") && token.length > 2) {
+              return <code key={tIdx} className="bg-slate-100 text-slate-800 px-1 py-0.5 rounded font-mono text-xs">{token.slice(1, -1)}</code>;
+            }
+            return <span key={tIdx}>{token}</span>;
+          })}
+        </span>
+      );
+    });
+  };
 
   // Generate rendered preview text with variable sample substitution
   const renderedBody = () => {
@@ -849,7 +939,7 @@ export function TemplateEditor() {
           <div className="border-[7px] border-slate-800 rounded-[3rem] overflow-hidden bg-[#efeae2] h-[700px] flex flex-col relative shadow-2xl">
             {/* Phone Notch/Top bar */}
             <div className="bg-white text-slate-900 px-6 pt-3 pb-2.5 flex justify-between items-center text-xs font-bold border-b border-slate-100 z-10">
-              <div>9:41</div>
+              <div>{currentTime}</div>
               <div className="w-24 h-5 bg-black rounded-full" />
               <div className="flex items-center gap-1">
                 <span className="text-[10px]">5G</span>
@@ -899,15 +989,15 @@ export function TemplateEditor() {
                       📋 {otpButtonText || "Copy code"}
                     </button>
                   </div>
-                  <div className="text-[10px] text-slate-400 text-right">11:27 AM</div>
+                  <div className="text-[10px] text-slate-400 text-right">{currentTime}</div>
                 </div>
               ) : templateType === "Carousel" ? (
                 /* Carousel Cards Horizontal Preview */
                 <div className="space-y-3">
                   {bodyText && (
                     <div className="bg-white p-3 rounded-2xl rounded-tl-none shadow-xs max-w-[90%] text-xs leading-relaxed text-slate-800">
-                      {renderedBody()}
-                      <div className="text-[10px] text-slate-400 text-right mt-1">11:27 AM</div>
+                      {renderFormattedBody()}
+                      <div className="text-[10px] text-slate-400 text-right mt-1">{currentTime}</div>
                     </div>
                   )}
 
@@ -934,35 +1024,99 @@ export function TemplateEditor() {
               ) : (
                 /* Standard & Offer Bubble Preview */
                 <div className="bg-white p-3.5 rounded-2xl rounded-tl-none shadow-xs self-start max-w-[92%] relative mt-2 text-xs leading-relaxed text-slate-800">
-                  {/* Header */}
+                  {/* Header Preview */}
                   {headerType === "Text" && headerText ? (
-                    <div className="mb-2 font-bold text-sm text-slate-900">{headerText}</div>
-                  ) : headerType !== "None" ? (
-                    <div className="mb-2 w-full h-28 bg-slate-100 rounded-xl flex items-center justify-center text-slate-400 text-xs font-bold border border-slate-200">
-                      📎 {headerType} Header
+                    <div className="mb-2 font-bold text-sm text-slate-900 border-b border-slate-100 pb-1.5 leading-snug">
+                      {headerText}
+                    </div>
+                  ) : headerType === "Image" ? (
+                    headerPreviewUrl ? (
+                      <div className="mb-2.5 w-full h-36 rounded-xl overflow-hidden border border-slate-200 bg-slate-100 shadow-2xs">
+                        <img src={headerPreviewUrl} alt="Header Preview" className="w-full h-full object-cover" />
+                      </div>
+                    ) : (
+                      <div className="mb-2.5 w-full h-28 bg-emerald-50/60 rounded-xl flex flex-col items-center justify-center text-slate-500 text-xs font-medium border border-dashed border-emerald-200/80 gap-1.5">
+                        <svg className="w-7 h-7 text-[#00b050]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                        <span className="text-[11px] font-bold text-slate-700">Image Header</span>
+                        <span className="text-[10px] text-slate-400">Sample image will appear here</span>
+                      </div>
+                    )
+                  ) : headerType === "Video" ? (
+                    headerPreviewUrl ? (
+                      <div className="mb-2.5 w-full h-36 rounded-xl overflow-hidden border border-slate-200 bg-black shadow-2xs">
+                        <video src={headerPreviewUrl} controls className="w-full h-full object-cover" />
+                      </div>
+                    ) : (
+                      <div className="mb-2.5 w-full h-28 bg-emerald-50/60 rounded-xl flex flex-col items-center justify-center text-slate-500 text-xs font-medium border border-dashed border-emerald-200/80 gap-1.5">
+                        <svg className="w-7 h-7 text-[#00b050]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                        <span className="text-[11px] font-bold text-slate-700">Video Header</span>
+                        <span className="text-[10px] text-slate-400">Sample video will play here</span>
+                      </div>
+                    )
+                  ) : headerType === "Document" ? (
+                    <div className="mb-2.5 w-full p-2.5 bg-slate-50 rounded-xl flex items-center gap-2.5 border border-slate-200 shadow-2xs">
+                      <div className="w-9 h-9 rounded-lg bg-rose-100 flex items-center justify-center text-rose-600 font-bold text-xs shrink-0">
+                        PDF
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-bold text-slate-800 truncate">
+                          {headerFile ? headerFile.name : "document.pdf"}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          {headerFile ? `${(headerFile.size / 1024).toFixed(0)} KB · PDF` : "Sample document"}
+                        </div>
+                      </div>
                     </div>
                   ) : null}
 
-                  {/* Body with substituted sample values */}
-                  <div className="whitespace-pre-wrap leading-relaxed text-[13px]">
-                    {renderedBody() || "Your message preview will appear here"}
+                  {/* Body with rich formatting & variable chips */}
+                  <div className="leading-relaxed text-[13px] text-slate-800">
+                    {renderFormattedBody()}
                   </div>
+
+                  {/* Limited Time Offer Coupon Badge */}
+                  {templateType === "Offer" && (
+                    <div className="mt-3 p-3 bg-amber-50/80 border border-amber-200 rounded-xl text-center space-y-1.5">
+                      <div className="text-[10px] font-bold text-amber-800 uppercase tracking-wider flex items-center justify-center gap-1">
+                        <span>🏷️ Offer Coupon</span>
+                      </div>
+                      <div className="font-mono font-bold text-sm text-slate-900 bg-white py-1 px-3 rounded-lg border border-dashed border-amber-400 inline-block shadow-2xs">
+                        {offerCouponCode || "SUMMER20"}
+                      </div>
+                      {offerExpirationText && (
+                        <div className="text-[10px] text-amber-700 font-medium">⏳ {offerExpirationText}</div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Footer */}
                   {footerText && (
-                    <div className="text-[11px] text-slate-500 mt-2 italic">
+                    <div className="text-[11px] text-slate-500 mt-2 italic border-t border-slate-50 pt-1">
                       {footerText}
                     </div>
                   )}
 
-                  <div className="text-[10px] text-slate-400 text-right mt-1">11:27 AM</div>
+                  <div className="text-[10px] text-slate-400 text-right mt-1.5 flex items-center justify-end gap-1">
+                    <span>{currentTime}</span>
+                    <svg className="w-3.5 h-3.5 text-[#53bdeb]" viewBox="0 0 16 11" fill="currentColor">
+                      <path d="M11.07 0.93a0.75 0.75 0 0 0-1.06 0L5.3 5.64 3.73 4.07a0.75 0.75 0 0 0-1.06 1.06l2.1 2.1a0.75 0.75 0 0 0 1.06 0l5.24-5.24a0.75 0.75 0 0 0 0-1.06z" />
+                      <path d="M14.07 0.93a0.75 0.75 0 0 0-1.06 0L8.3 5.64l0.53 0.53 4.71-4.71a0.75 0.75 0 0 0 0-1.06z" />
+                    </svg>
+                  </div>
 
                   {/* Buttons */}
                   {buttons.filter(Boolean).length > 0 && (
                     <div className="mt-2.5 -mx-3.5 -mb-3.5 border-t border-slate-100 divide-y divide-slate-100">
                       {buttons.filter(Boolean).map((b, i) => (
-                        <div key={i} className="py-2 text-center text-xs font-bold text-[#00a5f4] hover:bg-slate-50 transition cursor-pointer">
-                          {b}
+                        <div key={i} className="py-2.5 text-center text-xs font-bold text-[#00a5f4] hover:bg-slate-50 transition cursor-pointer flex items-center justify-center gap-1.5">
+                          <svg className="w-3.5 h-3.5 opacity-80" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                          </svg>
+                          <span>{b}</span>
                         </div>
                       ))}
                     </div>

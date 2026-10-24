@@ -18,7 +18,7 @@ def main():
         "FRONTEND_ORIGINS": "https://fmfilms.in,https://www.fmfilms.in,https://admin.fmfilms.in",
         "JWT_SECRET": secrets.token_hex(48),
         "JWT_ALGORITHM": "HS256",
-        "ACCESS_TOKEN_EXPIRE_MINUTES": "15",
+        "ACCESS_TOKEN_EXPIRE_MINUTES": "10080",
         "INVITATION_EXPIRE_HOURS": "72",
         "PASSWORD_RESET_EXPIRE_MINUTES": "60",
         "SMTP_PORT": "587",

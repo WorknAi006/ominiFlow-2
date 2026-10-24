@@ -278,6 +278,11 @@ def _whatsapp_worker_loop():
             flow_delivery.run_once(batch_size=50)
         except Exception:
             pass
+        try:
+            from app.workers import campaigns
+            campaigns.run_once(batch_size=50)
+        except Exception:
+            pass
         time.sleep(2.0)
 
 

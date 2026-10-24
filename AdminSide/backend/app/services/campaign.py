@@ -18,13 +18,36 @@ class CampaignService:
 
     def get_audience_count(self, tenant_id: uuid.UUID, config: dict[str, Any]) -> int:
         tags = config.get("tags", [])
-        if not tags:
+        all_contacts = config.get("all_contacts", False) or not tags
+        
+        if all_contacts or not tags:
+            query = select(func.count(Contact.id)).where(
+                Contact.tenant_id == tenant_id,
+                Contact.is_blocked.is_(False),
+                Contact.phone_number.is_not(None),
+            )
+            return self.db.scalar(query) or 0
+
+        tag_uuids = []
+        for t in tags:
+            try:
+                tag_uuids.append(uuid.UUID(str(t)))
+            except (ValueError, TypeError):
+                pass
+
+        if not tag_uuids:
             return 0
         
-        # Audience is contacts that have at least one of the tags
-        query = select(func.count(func.distinct(ContactTag.contact_id))).where(
-            ContactTag.tenant_id == tenant_id,
-            ContactTag.tag_id.in_(tags)
+        # Audience is contacts that have at least one of the tags and a valid phone number
+        query = (
+            select(func.count(func.distinct(ContactTag.contact_id)))
+            .join(Contact, Contact.id == ContactTag.contact_id)
+            .where(
+                ContactTag.tenant_id == tenant_id,
+                ContactTag.tag_id.in_(tag_uuids),
+                Contact.is_blocked.is_(False),
+                Contact.phone_number.is_not(None),
+            )
         )
         return self.db.scalar(query) or 0
 
@@ -124,19 +147,56 @@ class CampaignService:
             raise ValueError(f"Cannot start a campaign in {campaign.status} status")
 
         # Resolve audience and populate recipients
-        tags = (campaign.audience_config or {}).get("tags", [])
-        if not tags:
-            raise ValueError("No tags configured for audience")
+        config = campaign.audience_config or {}
+        tags = config.get("tags", [])
+        all_contacts = config.get("all_contacts", False) or not tags
 
-        contact_ids = self.db.scalars(
-            select(func.distinct(ContactTag.contact_id)).where(
-                ContactTag.tenant_id == tenant_id,
-                ContactTag.tag_id.in_(tags)
-            )
-        ).all()
+        if all_contacts or not tags:
+            contact_ids = self.db.scalars(
+                select(Contact.id).where(
+                    Contact.tenant_id == tenant_id,
+                    Contact.is_blocked.is_(False),
+                    Contact.phone_number.is_not(None),
+                )
+            ).all()
+        else:
+            tag_uuids = []
+            for t in tags:
+                try:
+                    tag_uuids.append(uuid.UUID(str(t)))
+                except (ValueError, TypeError):
+                    pass
+
+            if not tag_uuids:
+                contact_ids = self.db.scalars(
+                    select(Contact.id).where(
+                        Contact.tenant_id == tenant_id,
+                        Contact.is_blocked.is_(False),
+                        Contact.phone_number.is_not(None),
+                    )
+                ).all()
+            else:
+                contact_ids = self.db.scalars(
+                    select(func.distinct(ContactTag.contact_id))
+                    .join(Contact, Contact.id == ContactTag.contact_id)
+                    .where(
+                        ContactTag.tenant_id == tenant_id,
+                        ContactTag.tag_id.in_(tag_uuids),
+                        Contact.is_blocked.is_(False),
+                        Contact.phone_number.is_not(None),
+                    )
+                ).all()
 
         if not contact_ids:
-            raise ValueError("No matching contacts found for audience")
+            if not all_contacts and tags:
+                raise ValueError(
+                    "No matching contacts with phone numbers found for the selected tags. "
+                    "Please assign tags to contacts or broadcast to All Contacts."
+                )
+            raise ValueError(
+                "No matching contacts found with phone numbers for this broadcast. "
+                "Please add contacts with phone numbers under Contacts first."
+            )
 
         # Atomically populate campaign_recipients
         recipients = []
